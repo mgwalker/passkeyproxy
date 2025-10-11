@@ -1,0 +1,44 @@
+services:
+  passkeyproxy:
+    build: .
+    container_name: passkeyproxy
+    ports:
+      - "8080:8080"
+    volumes:
+      # Persistent storage for credentials
+      - ./data:/app/data
+    environment:
+      # Proxy configuration
+      - PROXY_LISTEN_HOST=0.0.0.0
+      - PROXY_LISTEN_PORT=8080
+
+      # Target application to protect
+      - TARGET_HOST=host.docker.internal
+      - TARGET_PORT=3000
+
+      # Session configuration
+      - SESSION_EXPIRY_HOURS=24
+
+      # WebAuthn configuration
+      - RP_NAME=Passkey Proxy
+
+      # Credentials storage
+      - CREDENTIALS_FILE=/app/data/credentials.json
+
+      # IMPORTANT: Set a secure random JWT secret key
+      # Generate with: openssl rand -base64 32
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+    restart: unless-stopped
+
+    # Optional: Use extra_hosts if proxying to services on host machine
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    read_only: false  # Need write access for credentials.json
+
+    # Resource limits (adjust as needed)
+    # mem_limit: 512m
+    # cpus: '0.5'

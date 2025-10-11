@@ -286,15 +286,16 @@ def setup_page() -> str:
                     headers: {{'Content-Type': 'application/json'}},
                     body: JSON.stringify({{username}})
                 }});
-                
+
                 if (!beginResp.ok) {{
                     const error = await beginResp.text();
                     throw new Error(error || 'Failed to begin registration');
                 }}
-                
+
                 const options = await beginResp.json();
+                const challengeId = options.challenge_id;
                 document.getElementById('status').textContent = 'Please interact with your authenticator...';
-                
+
                 // Create credential
                 const credential = await navigator.credentials.create({{
                     publicKey: {{
@@ -323,15 +324,16 @@ def setup_page() -> str:
                             }},
                             type: credential.type
                         }},
-                        username
+                        username,
+                        challenge_id: challengeId
                     }})
                 }});
-                
+
                 if (!completeResp.ok) {{
                     const error = await completeResp.text();
                     throw new Error(error || 'Failed to complete registration');
                 }}
-                
+
                 document.getElementById('status').textContent = 'Success! Redirecting...';
                 setTimeout(() => window.location.href = '/login', 1000);
                 
@@ -381,14 +383,15 @@ def login_page() -> str:
                 const beginResp = await fetch('/api/login/begin', {{
                     method: 'POST'
                 }});
-                
+
                 if (!beginResp.ok) {{
                     throw new Error('Failed to begin authentication');
                 }}
-                
+
                 const options = await beginResp.json();
+                const challengeId = options.challenge_id;
                 document.getElementById('status').textContent = 'Please interact with your authenticator...';
-                
+
                 // Get credential
                 const credential = await navigator.credentials.get({{
                     publicKey: {{
@@ -418,14 +421,15 @@ def login_page() -> str:
                                 userHandle: credential.response.userHandle ? btoa(String.fromCharCode(...new Uint8Array(credential.response.userHandle))) : null
                             }},
                             type: credential.type
-                        }}
+                        }},
+                        challenge_id: challengeId
                     }})
                 }});
-                
+
                 if (!completeResp.ok) {{
                     throw new Error('Authentication failed');
                 }}
-                
+
                 document.getElementById('status').textContent = 'Success! Redirecting...';
                 window.location.href = '/';
                 
@@ -485,14 +489,15 @@ def register_page() -> str:
                 const beginResp = await fetch('/api/register-auth/begin', {{
                     method: 'POST'
                 }});
-                
+
                 if (!beginResp.ok) {{
                     throw new Error('Failed to begin authentication');
                 }}
-                
+
                 const options = await beginResp.json();
+                const challengeId = options.challenge_id;
                 document.getElementById('status').textContent = 'Please interact with your authenticator...';
-                
+
                 const credential = await navigator.credentials.get({{
                     publicKey: {{
                         ...options,
@@ -520,14 +525,15 @@ def register_page() -> str:
                                 userHandle: credential.response.userHandle ? btoa(String.fromCharCode(...new Uint8Array(credential.response.userHandle))) : null
                             }},
                             type: credential.type
-                        }}
+                        }},
+                        challenge_id: challengeId
                     }})
                 }});
-                
+
                 if (!completeResp.ok) {{
                     throw new Error('Authentication failed');
                 }}
-                
+
                 document.getElementById('auth-step').style.display = 'none';
                 document.getElementById('register-step').style.display = 'block';
                 
@@ -552,14 +558,15 @@ def register_page() -> str:
                     headers: {{'Content-Type': 'application/json'}},
                     body: JSON.stringify({{username}})
                 }});
-                
+
                 if (!beginResp.ok) {{
                     throw new Error('Failed to begin registration');
                 }}
-                
+
                 const options = await beginResp.json();
+                const challengeId = options.challenge_id;
                 document.getElementById('status2').textContent = 'Please interact with your authenticator...';
-                
+
                 const credential = await navigator.credentials.create({{
                     publicKey: {{
                         ...options,
@@ -586,14 +593,15 @@ def register_page() -> str:
                             }},
                             type: credential.type
                         }},
-                        username
+                        username,
+                        challenge_id: challengeId
                     }})
                 }});
-                
+
                 if (!completeResp.ok) {{
                     throw new Error('Failed to complete registration');
                 }}
-                
+
                 document.getElementById('status2').textContent = 'Success! Redirecting...';
                 setTimeout(() => window.location.href = '/login', 1000);
                 
@@ -692,23 +700,26 @@ async def handle_register_complete(request: web.Request) -> web.Response:
         data = await request.json()
         credential = data.get('credential')
         username = data.get('username')
-        
+        challenge_id = data.get('challenge_id')
+
         if not credential or not username:
             return web.Response(text='Invalid request', status=400)
-        
-        # Find challenge
-        challenge_id = None
-        challenge_data = None
-        for cid, cdata in CHALLENGES.items():
-            if cdata.get('username') == username and cdata.get('type') == 'registration':
-                challenge_id = cid
-                challenge_data = cdata
-                break
-        
+
+        if not challenge_id:
+            return web.Response(text='Challenge ID required', status=400)
+
+        # Look up challenge by ID
+        challenge_data = CHALLENGES.get(challenge_id)
+
         if not challenge_data:
-            return web.Response(text='Challenge not found', status=400)
-        
-        # Clean up old challenges
+            return web.Response(text='Challenge not found or expired', status=400)
+
+        # Verify it's a registration challenge for the right user
+        if challenge_data.get('type') != 'registration' or challenge_data.get('username') != username:
+            CHALLENGES.pop(challenge_id, None)
+            return web.Response(text='Invalid challenge', status=400)
+
+        # Clean up challenge (single-use)
         CHALLENGES.pop(challenge_id, None)
         
         rp_id = get_rp_id(request)
@@ -784,29 +795,33 @@ async def handle_login_complete(request: web.Request) -> web.Response:
     try:
         data = await request.json()
         credential = data.get('credential')
-        
+        challenge_id = data.get('challenge_id')
+
         if not credential:
             return web.Response(text='Invalid request', status=400)
-        
+
+        if not challenge_id:
+            return web.Response(text='Challenge ID required', status=400)
+
         # Find credential in store
         cred_id = base64url_to_bytes(credential['rawId'])
         stored_cred = cred_store.get_credential_by_id(cred_id)
-        
+
         if not stored_cred:
             return web.Response(text='Credential not found', status=400)
-        
-        # Find any authentication challenge
-        challenge_data = None
-        challenge_id = None
-        for cid, cdata in CHALLENGES.items():
-            if cdata.get('type') == 'authentication':
-                challenge_id = cid
-                challenge_data = cdata
-                break
-        
+
+        # Look up challenge by ID
+        challenge_data = CHALLENGES.get(challenge_id)
+
         if not challenge_data:
-            return web.Response(text='Challenge not found', status=400)
-        
+            return web.Response(text='Challenge not found or expired', status=400)
+
+        # Verify it's an authentication challenge
+        if challenge_data.get('type') != 'authentication':
+            CHALLENGES.pop(challenge_id, None)
+            return web.Response(text='Invalid challenge', status=400)
+
+        # Clean up challenge (single-use)
         CHALLENGES.pop(challenge_id, None)
         
         rp_id = get_rp_id(request)
@@ -856,27 +871,32 @@ async def handle_register_auth_complete(request: web.Request) -> web.Response:
     try:
         data = await request.json()
         credential = data.get('credential')
-        
+        challenge_id = data.get('challenge_id')
+
         if not credential:
             return web.Response(text='Invalid request', status=400)
-        
+
+        if not challenge_id:
+            return web.Response(text='Challenge ID required', status=400)
+
         cred_id = base64url_to_bytes(credential['rawId'])
         stored_cred = cred_store.get_credential_by_id(cred_id)
-        
+
         if not stored_cred:
             return web.Response(text='Credential not found', status=400)
-        
-        challenge_data = None
-        challenge_id = None
-        for cid, cdata in CHALLENGES.items():
-            if cdata.get('type') == 'authentication':
-                challenge_id = cid
-                challenge_data = cdata
-                break
-        
+
+        # Look up challenge by ID
+        challenge_data = CHALLENGES.get(challenge_id)
+
         if not challenge_data:
-            return web.Response(text='Challenge not found', status=400)
-        
+            return web.Response(text='Challenge not found or expired', status=400)
+
+        # Verify it's an authentication challenge
+        if challenge_data.get('type') != 'authentication':
+            CHALLENGES.pop(challenge_id, None)
+            return web.Response(text='Invalid challenge', status=400)
+
+        # Clean up challenge (single-use)
         CHALLENGES.pop(challenge_id, None)
         
         rp_id = get_rp_id(request)
