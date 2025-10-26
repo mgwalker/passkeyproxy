@@ -9,6 +9,7 @@ import json
 import time
 import logging
 import secrets
+import asyncio
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 from pathlib import Path
@@ -922,9 +923,100 @@ async def handle_register_auth_complete(request: web.Request) -> web.Response:
         return web.Response(text='Authentication failed', status=500)
 
 
+async def handle_websocket_proxy(request: web.Request) -> web.WebSocketResponse:
+    """Proxy WebSocket connections to target application"""
+    # Get authenticated username
+    username = request.get('authenticated_user', 'unknown')
+
+    # Accept WebSocket connection from client
+    client_ws = web.WebSocketResponse()
+    await client_ws.prepare(request)
+
+    # Build target WebSocket URL
+    target_ws_url = f"ws://{CONFIG['TARGET_HOST']}:{CONFIG['TARGET_PORT']}{request.path_qs}"
+
+    # Prepare headers for backend connection
+    headers = {
+        'X-Forwarded-User': username,
+        'X-Forwarded-For': request.remote or 'unknown',
+        'X-Forwarded-Proto': request.headers.get('X-Forwarded-Proto', 'http'),
+    }
+
+    # Copy other headers that might be relevant
+    for key, value in request.headers.items():
+        if key.lower() not in ['host', 'connection', 'upgrade', 'sec-websocket-key',
+                                'sec-websocket-version', 'sec-websocket-extensions']:
+            headers[key] = value
+
+    backend_ws = None
+    try:
+        # Connect to backend WebSocket
+        timeout = ClientTimeout(total=60)
+        async with ClientSession(timeout=timeout) as session:
+            backend_ws = await session.ws_connect(target_ws_url, headers=headers)
+
+            # Create tasks for bidirectional forwarding
+            async def forward_client_to_backend():
+                """Forward messages from client to backend"""
+                try:
+                    async for msg in client_ws:
+                        if msg.type == web.WSMsgType.TEXT:
+                            await backend_ws.send_str(msg.data)
+                        elif msg.type == web.WSMsgType.BINARY:
+                            await backend_ws.send_bytes(msg.data)
+                        elif msg.type == web.WSMsgType.CLOSE:
+                            await backend_ws.close()
+                            break
+                        elif msg.type == web.WSMsgType.ERROR:
+                            logger.error(f'WebSocket client error: {client_ws.exception()}')
+                            break
+                except Exception as e:
+                    logger.error(f"Error forwarding client to backend: {e}")
+
+            async def forward_backend_to_client():
+                """Forward messages from backend to client"""
+                try:
+                    async for msg in backend_ws:
+                        if msg.type == web.WSMsgType.TEXT:
+                            await client_ws.send_str(msg.data)
+                        elif msg.type == web.WSMsgType.BINARY:
+                            await client_ws.send_bytes(msg.data)
+                        elif msg.type == web.WSMsgType.CLOSE:
+                            await client_ws.close()
+                            break
+                        elif msg.type == web.WSMsgType.ERROR:
+                            logger.error(f'WebSocket backend error: {backend_ws.exception()}')
+                            break
+                except Exception as e:
+                    logger.error(f"Error forwarding backend to client: {e}")
+
+            # Run both forwarding tasks concurrently
+            await asyncio.gather(
+                forward_client_to_backend(),
+                forward_backend_to_client(),
+                return_exceptions=True
+            )
+
+    except Exception as e:
+        logger.error(f"WebSocket proxy error: {e}")
+    finally:
+        # Cleanup connections
+        if backend_ws and not backend_ws.closed:
+            await backend_ws.close()
+        if not client_ws.closed:
+            await client_ws.close()
+
+    return client_ws
+
+
 async def handle_proxy(request: web.Request) -> web.Response:
     """Proxy requests to target application"""
     try:
+        # Detect WebSocket upgrade requests
+        if (request.headers.get('Upgrade', '').lower() == 'websocket' and
+            'upgrade' in request.headers.get('Connection', '').lower()):
+            return await handle_websocket_proxy(request)
+
         # Build target URL
         target_url = f"http://{CONFIG['TARGET_HOST']}:{CONFIG['TARGET_PORT']}{request.path_qs}"
         
