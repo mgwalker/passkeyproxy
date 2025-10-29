@@ -91,14 +91,14 @@ python main.py
 
 5. **Register the first user**
 
-- Navigate to `http://your-proxy-address:8080/setup`
+- Navigate to `http://your-proxy-address:8080/psetup`
 - Enter a username
 - Follow your browser's passkey registration flow
 - You'll be redirected to the login page
 
 6. **Login and access your application**
 
-- Visit `http://your-proxy-address:8080/login`
+- Visit `http://your-proxy-address:8080/plogin`
 - Authenticate with your passkey
 - You'll be proxied to your protected application
 
@@ -156,7 +156,7 @@ User Request  Passkey Proxy  Authentication Check  Target Application
 After the initial setup, existing authenticated users can register new users:
 
 1. Log in with an existing passkey
-2. Navigate to `/register`
+2. Navigate to `/pregister`
 3. Authenticate again (security verification)
 4. Enter the new username
 5. Complete passkey registration for the new user
@@ -334,7 +334,7 @@ To protect multiple applications, run multiple instances with different:
 - **Logs**: Check console output for error messages
 - **Authentication**: Verify you're properly authenticated
 
-### Can't access /setup page
+### Can't access /psetup page
 
 - Credentials already exist (`credentials.json` is not empty)
 - **Solution**: Delete `credentials.json` to reset (⚠️ all users will need to re-register)

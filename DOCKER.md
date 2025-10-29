@@ -26,7 +26,7 @@ This guide explains how to run the Passkey Proxy using Docker.
    ```
 
 4. **Access the proxy:**
-   - Open http://localhost:8080/setup
+   - Open http://localhost:8080/psetup
    - Register the first admin user with a passkey
 
 5. **View logs:**

@@ -24,8 +24,8 @@ The entire application is contained in `main.py` (~1050 lines). This design choi
    - Two-step registration: existing users must authenticate before registering new users
 
 3. **Middleware Stack** (lines 959-991)
-   - `setup_redirect_middleware`: Redirects to /setup if no credentials exist
-   - `auth_middleware`: Validates JWT tokens, redirects unauthenticated users to /login
+   - `setup_redirect_middleware`: Redirects to /psetup if no credentials exist
+   - `auth_middleware`: Validates JWT tokens, redirects unauthenticated users to /plogin
    - Both middlewares skip auth/setup pages and API endpoints
 
 4. **Proxy Handler** (lines 905-954)
@@ -53,9 +53,9 @@ Configuration is loaded from `.env` file via `python-dotenv` (line 33-34).
 ### Routes
 
 **Pages:**
-- `/setup` - Initial admin registration (only shown when no credentials exist)
-- `/login` - Passkey authentication
-- `/register` - New user registration (requires existing user auth first)
+- `/psetup` - Initial admin registration (only shown when no credentials exist)
+- `/plogin` - Passkey authentication
+- `/pregister` - New user registration (requires existing user auth first)
 
 **API Endpoints:**
 - `/api/register/begin` & `/api/register/complete` - WebAuthn registration ceremony

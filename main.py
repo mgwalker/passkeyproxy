@@ -336,7 +336,7 @@ def setup_page() -> str:
                 }}
 
                 document.getElementById('status').textContent = 'Success! Redirecting...';
-                setTimeout(() => window.location.href = '/login', 1000);
+                setTimeout(() => window.location.href = '/plogin', 1000);
                 
             }} catch (error) {{
                 showError(error.message);
@@ -372,7 +372,7 @@ def login_page() -> str:
         <p>Authenticate with your passkey</p>
         <div id="error" class="error" style="display:none;"></div>
         <button onclick="authenticate()">Sign in with Passkey</button>
-        <a href="/register" class="link">Register New User</a>
+        <a href="/pregister" class="link">Register New User</a>
         <div id="status" class="status"></div>
     </div>
     <script>
@@ -469,7 +469,7 @@ def register_page() -> str:
             <p>First, authenticate with your existing passkey</p>
             <div id="error" class="error" style="display:none;"></div>
             <button onclick="authenticateForRegistration()">Authenticate</button>
-            <a href="/login" class="link">Back to Login</a>
+            <a href="/plogin" class="link">Back to Login</a>
             <div id="status" class="status"></div>
         </div>
         
@@ -604,7 +604,7 @@ def register_page() -> str:
                 }}
 
                 document.getElementById('status2').textContent = 'Success! Redirecting...';
-                setTimeout(() => window.location.href = '/login', 1000);
+                setTimeout(() => window.location.href = '/plogin', 1000);
                 
             }} catch (error) {{
                 showError2(error.message);
@@ -634,7 +634,7 @@ def register_page() -> str:
 async def handle_setup(request: web.Request) -> web.Response:
     """Show setup page if no credentials exist"""
     if not cred_store.is_empty():
-        return web.HTTPFound('/login')
+        return web.HTTPFound('/plogin')
     return web.Response(text=setup_page(), content_type='text/html')
 
 
@@ -646,7 +646,7 @@ async def handle_login(request: web.Request) -> web.Response:
 async def handle_register_page(request: web.Request) -> web.Response:
     """Show registration page"""
     if cred_store.is_empty():
-        return web.HTTPFound('/setup')
+        return web.HTTPFound('/psetup')
     return web.Response(text=register_page(), content_type='text/html')
 
 
@@ -1072,19 +1072,19 @@ async def handle_proxy(request: web.Request) -> web.Response:
 async def auth_middleware(request: web.Request, handler):
     """Authentication middleware"""
     # Skip auth for setup and API endpoints
-    if request.path in ['/setup', '/login', '/register'] or request.path.startswith('/api/'):
+    if request.path in ['/psetup', '/plogin', '/pregister'] or request.path.startswith('/api/'):
         return await handler(request)
     
     # Check for valid JWT
     token = request.cookies.get('session')
-    
+
     if not token:
-        return web.HTTPFound('/login')
-    
+        return web.HTTPFound('/plogin')
+
     payload = verify_jwt(token)
     if not payload:
         # Clear invalid cookie
-        response = web.HTTPFound('/login')
+        response = web.HTTPFound('/plogin')
         response.del_cookie('session')
         return response
     
@@ -1097,8 +1097,8 @@ async def auth_middleware(request: web.Request, handler):
 @web.middleware
 async def setup_redirect_middleware(request: web.Request, handler):
     """Redirect to setup if no credentials exist"""
-    if cred_store.is_empty() and request.path not in ['/setup', '/api/register/begin', '/api/register/complete']:
-        return web.HTTPFound('/setup')
+    if cred_store.is_empty() and request.path not in ['/psetup', '/api/register/begin', '/api/register/complete']:
+        return web.HTTPFound('/psetup')
     
     return await handler(request)
 
@@ -1110,9 +1110,9 @@ def create_app() -> web.Application:
     app = web.Application(middlewares=[setup_redirect_middleware, auth_middleware])
     
     # Add routes
-    app.router.add_get('/setup', handle_setup)
-    app.router.add_get('/login', handle_login)
-    app.router.add_get('/register', handle_register_page)
+    app.router.add_get('/psetup', handle_setup)
+    app.router.add_get('/plogin', handle_login)
+    app.router.add_get('/pregister', handle_register_page)
     
     # API routes
     app.router.add_post('/api/register/begin', handle_register_begin)
@@ -1141,7 +1141,7 @@ def main():
     print(f"Credentials file: {CONFIG['CREDENTIALS_FILE']}")
     
     if cred_store.is_empty():
-        print("\nNo credentials found. Please visit /setup to register the first user.")
+        print("\nNo credentials found. Please visit /psetup to register the first user.")
     else:
         print(f"\nFound {len(cred_store.credentials)} registered user(s).")
     
