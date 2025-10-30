@@ -13,6 +13,7 @@ A lightweight, passkey-authenticated HTTP reverse proxy for securing home and ho
 - 👥 **Multi-User** - Support for multiple authenticated users
 - 📊 **Streaming Support** - Handles large responses and streaming content
 - 🌙 **Dark Mode UI** - Clean, modern authentication interface
+- 🛡️ **Security Hardened** - CSRF protection, rate limiting, challenge expiration, and more
 
 ## Use Cases
 
@@ -70,9 +71,11 @@ TARGET_PORT=3000
 PROXY_LISTEN_HOST=0.0.0.0
 PROXY_LISTEN_PORT=8080
 
+# Required: JWT secret key for session tokens (generate with: python -c 'import secrets; print(secrets.token_urlsafe(32))')
+JWT_SECRET_KEY=your-secret-key-here
+
 # Optional: Session and security
 SESSION_EXPIRY_HOURS=24
-JWT_SECRET_KEY=your-secret-key-here  # Generated automatically if not set
 RP_NAME="My Passkey Proxy"
 
 # Optional: Credential storage
@@ -113,7 +116,7 @@ All configuration is done via environment variables (or `.env` file):
 | `PROXY_LISTEN_HOST` | `0.0.0.0` | Address for proxy to listen on |
 | `PROXY_LISTEN_PORT` | `8080` | Port for proxy to listen on |
 | `SESSION_EXPIRY_HOURS` | `24` | How long sessions remain valid |
-| `JWT_SECRET_KEY` | Auto-generated | Secret key for signing session tokens |
+| `JWT_SECRET_KEY` | **Required** | Secret key for signing session tokens (min 32 bytes) |
 | `RP_NAME` | `Passkey Proxy` | Display name shown during authentication |
 | `CREDENTIALS_FILE` | `./credentials.json` | Where to store passkey credentials |
 
@@ -143,9 +146,22 @@ User Request  Passkey Proxy  Authentication Check  Target Application
 
 ### Security Features
 
-- **HTTP-Only Cookies**: Session tokens not accessible to JavaScript
+- **HTTP-Only Cookies**: Session tokens not accessible to JavaScript (XSS protection)
+- **Strict SameSite Cookies**: Prevents CSRF attacks via cookie policy
+- **CSRF Token Validation**: HMAC-SHA256 based tokens for state-changing operations
+  - Cryptographically bound using JWT_SECRET_KEY
+  - Reusable per page session (supports multi-step WebAuthn flows)
+  - 10-minute expiry with automatic cleanup
+- **Challenge Expiration**: WebAuthn challenges expire after 60 seconds
 - **Challenge-Response**: Cryptographic challenge verification for each authentication
 - **Sign Count Validation**: Detects credential cloning attacks
+- **Rate Limiting**: IP-based request limiting to prevent brute force attacks
+  - BEGIN endpoints: 10 requests/minute
+  - COMPLETE endpoints: 20 requests/minute
+  - Page endpoints: 30 requests/minute
+- **Automatic Cleanup**: Background task removes expired challenges, CSRF tokens, and rate limit data
+- **Memory Limits**: Maximum 1000 active challenges and CSRF tokens to prevent memory exhaustion
+- **JWT Validation**: Required strong secret key (minimum 256 bits)
 - **Resident Keys**: Supports discoverable credentials for better UX
 - **File Permissions**: Credential file restricted to owner-only (0600)
 
@@ -279,11 +295,12 @@ docker run -d \
 
 ### Environment Considerations
 
-- **JWT_SECRET_KEY**: Use a strong, unique secret in production
-- **File Permissions**: Ensure `credentials.json` and `.env` are protected
+- **JWT_SECRET_KEY**: **Required** - Must be explicitly set. Generate with: `python -c 'import secrets; print(secrets.token_urlsafe(32))'`
+- **File Permissions**: Ensure `credentials.json` and `.env` are protected (chmod 600)
 - **Backups**: Regularly backup `credentials.json`
 - **Logging**: Currently set to ERROR level only; adjust if needed
-- **Challenge Storage**: In-memory only; challenges are lost on restart (this is acceptable as they're short-lived)
+- **Challenge Storage**: In-memory only; challenges expire after 60 seconds and are automatically cleaned up
+- **Rate Limiting**: Limits are per IP address - adjust constants in main.py if needed for your use case
 
 ## Advanced Usage
 
@@ -321,9 +338,9 @@ To protect multiple applications, run multiple instances with different:
 - **Browser Compatibility**: Use a modern browser with WebAuthn support
 - **Permissions**: Check credential file permissions (should be 0600)
 
-### "Challenge not found"
+### "Challenge not found" or "Challenge has expired"
 
-- Challenge expired (short-lived by design)
+- Challenges expire after 60 seconds (security feature)
 - Application restarted (challenges are in-memory)
 - **Solution**: Refresh the page and try again
 
@@ -339,6 +356,18 @@ To protect multiple applications, run multiple instances with different:
 - Credentials already exist (`credentials.json` is not empty)
 - **Solution**: Delete `credentials.json` to reset (⚠️ all users will need to re-register)
 
+### "Too many requests"
+
+- Rate limit exceeded (HTTP 429 error)
+- Check the `Retry-After` header for when you can retry
+- **Solution**: Wait for the rate limit window to reset, or adjust rate limit constants in main.py if legitimate use case
+
+### "Invalid or expired CSRF token"
+
+- CSRF token expired (10 minute timeout)
+- Page was open too long before submitting
+- **Solution**: Refresh the page and try again
+
 ## Security Considerations
 
 ### What This Protects
@@ -347,6 +376,10 @@ To protect multiple applications, run multiple instances with different:
 ✓ Weak password vulnerabilities
 ✓ Credential stuffing attacks
 ✓ Session hijacking (with proper HTTPS setup)
+✓ CSRF attacks (via SameSite cookies and HMAC-based CSRF tokens)
+✓ Brute force attacks (via rate limiting)
+✓ Replay attacks (via challenge expiration)
+✓ Memory exhaustion DoS (via automatic cleanup and limits)
 
 ### What This Doesn't Protect
 
@@ -354,24 +387,27 @@ To protect multiple applications, run multiple instances with different:
 ✗ Attacks after authentication (authorization is application-dependent)
 ✗ Physical access to authenticated devices
 ✗ Compromised JWT_SECRET_KEY
+✗ Distributed DoS attacks (consider using a CDN/WAF)
 
 ### Best Practices
 
 1. **Use HTTPS in production** - Non-negotiable for security
-2. **Strong JWT secret** - Use a cryptographically random key
+2. **Strong JWT secret** - Generate with `python -c 'import secrets; print(secrets.token_urlsafe(32))'` and keep it secure
 3. **Regular backups** - Don't lose your credentials file
-4. **Monitor logs** - Watch for unusual authentication patterns
+4. **Monitor logs** - Watch for unusual authentication patterns and rate limit hits
 5. **Update dependencies** - Keep Python packages current
 6. **Limit exposure** - Use firewall rules to restrict access
 7. **Separate credentials** - Use different `CREDENTIALS_FILE` for each application
+8. **Protect .env file** - Set permissions to 600 (owner read/write only)
+9. **Review rate limits** - Adjust if needed for your specific use case
 
 ## Limitations
 
 - **Single-file design**: Optimized for simplicity over scalability
-- **In-memory challenges**: Lost on restart (acceptable for WebAuthn use case)
+- **In-memory state**: Challenges, CSRF tokens, and rate limits lost on restart (acceptable for this use case)
 - **File-based storage**: Not suitable for thousands of users
-- **No built-in rate limiting**: Add via reverse proxy if needed
-- **No audit logging**: Only error logs by default
+- **IP-based rate limiting**: Shared NAT/proxy can affect multiple users
+- **No audit logging**: Only error logs by default (no authentication event logs)
 
 ## Contributing
 

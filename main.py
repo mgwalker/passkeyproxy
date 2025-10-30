@@ -9,6 +9,8 @@ import json
 import time
 import logging
 import secrets
+import hmac
+import hashlib
 import asyncio
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
@@ -45,13 +47,28 @@ CONFIG = {
     'TARGET_HOST': os.getenv('TARGET_HOST', 'localhost'),
     'TARGET_PORT': int(os.getenv('TARGET_PORT', '3000')),
     'SESSION_EXPIRY_HOURS': int(os.getenv('SESSION_EXPIRY_HOURS', '24')),
-    'JWT_SECRET_KEY': os.getenv('JWT_SECRET_KEY', secrets.token_urlsafe(32)),
+    'JWT_SECRET_KEY': os.getenv('JWT_SECRET_KEY'),  # No fallback - must be explicitly set
     'RP_NAME': os.getenv('RP_NAME', 'Passkey Proxy'),
     'CREDENTIALS_FILE': os.getenv('CREDENTIALS_FILE', './credentials.json'),
 }
 
-# In-memory challenge storage (challenge_id -> challenge_data)
-CHALLENGES: Dict[str, dict] = {}
+# Security constants
+CHALLENGE_EXPIRY_SECONDS = 60  # WebAuthn challenges expire after 60 seconds
+CSRF_TOKEN_EXPIRY_SECONDS = 600  # CSRF tokens expire after 10 minutes
+MAX_CHALLENGES = 1000  # Maximum number of challenges in memory
+MAX_CSRF_TOKENS = 1000  # Maximum number of CSRF tokens in memory
+CLEANUP_INTERVAL_SECONDS = 30  # Run cleanup every 30 seconds
+
+# Rate limiting constants (per IP, per endpoint)
+RATE_LIMIT_BEGIN_ENDPOINTS = 10  # requests per minute
+RATE_LIMIT_COMPLETE_ENDPOINTS = 20  # requests per minute
+RATE_LIMIT_PAGE_ENDPOINTS = 30  # requests per minute
+RATE_LIMIT_WINDOW_SECONDS = 60  # 1 minute window
+
+# In-memory storage
+CHALLENGES: Dict[str, dict] = {}  # challenge_id -> {challenge, username, timestamp, type}
+CSRF_TOKENS: Dict[str, float] = {}  # csrf_token_id -> timestamp
+RATE_LIMITS: Dict[str, Dict[str, dict]] = {}  # ip -> {endpoint -> {count, window_start}}
 
 
 class CredentialStore:
@@ -126,6 +143,114 @@ class CredentialStore:
 cred_store = CredentialStore(CONFIG['CREDENTIALS_FILE'])
 
 
+# Security helper functions
+
+def generate_csrf_token() -> tuple[str, str]:
+    """Generate CSRF token with HMAC signature"""
+    token_id = secrets.token_urlsafe(32)
+    timestamp = time.time()
+
+    # Compute HMAC signature over token_id + timestamp
+    message = f"{token_id}:{timestamp}".encode('utf-8')
+    token_value = hmac.new(
+        CONFIG['JWT_SECRET_KEY'].encode('utf-8'),
+        message,
+        hashlib.sha256
+    ).hexdigest()
+
+    CSRF_TOKENS[token_id] = timestamp
+    return (token_id, token_value)
+
+
+def validate_csrf_token(token_id: str, token_value: str) -> bool:
+    """Validate CSRF token with HMAC verification (reusable per page session)"""
+    if not token_id or not token_value:
+        return False
+
+    # Check if token exists
+    timestamp = CSRF_TOKENS.get(token_id)
+    if timestamp is None:
+        return False
+
+    # Check if token is expired
+    if time.time() - timestamp > CSRF_TOKEN_EXPIRY_SECONDS:
+        CSRF_TOKENS.pop(token_id, None)
+        return False
+
+    # Recompute HMAC and verify
+    message = f"{token_id}:{timestamp}".encode('utf-8')
+    expected_value = hmac.new(
+        CONFIG['JWT_SECRET_KEY'].encode('utf-8'),
+        message,
+        hashlib.sha256
+    ).hexdigest()
+
+    # Constant-time comparison to prevent timing attacks
+    return hmac.compare_digest(token_value, expected_value)
+
+
+def validate_challenge_timestamp(timestamp: float, max_age: int = CHALLENGE_EXPIRY_SECONDS) -> bool:
+    """Validate that a challenge timestamp is not expired"""
+    return (time.time() - timestamp) <= max_age
+
+
+def get_client_ip(request: web.Request) -> str:
+    """Get client IP address, respecting X-Forwarded-For header"""
+    forwarded_for = request.headers.get('X-Forwarded-For')
+    if forwarded_for:
+        # X-Forwarded-For can be a list; take the first (original client)
+        return forwarded_for.split(',')[0].strip()
+    return request.remote or 'unknown'
+
+
+def cleanup_expired_items():
+    """Remove expired challenges, CSRF tokens, and rate limit entries"""
+    current_time = time.time()
+
+    # Cleanup expired challenges
+    expired_challenges = [
+        cid for cid, data in CHALLENGES.items()
+        if current_time - data.get('timestamp', 0) > CHALLENGE_EXPIRY_SECONDS
+    ]
+    for cid in expired_challenges:
+        CHALLENGES.pop(cid, None)
+
+    # Cleanup expired CSRF tokens
+    expired_csrf = [
+        tid for tid, timestamp in CSRF_TOKENS.items()
+        if current_time - timestamp > CSRF_TOKEN_EXPIRY_SECONDS
+    ]
+    for tid in expired_csrf:
+        CSRF_TOKENS.pop(tid, None)
+
+    # Enforce max limits (remove oldest if over limit)
+    if len(CHALLENGES) > MAX_CHALLENGES:
+        # Sort by timestamp and keep only the newest MAX_CHALLENGES
+        sorted_challenges = sorted(
+            CHALLENGES.items(),
+            key=lambda x: x[1].get('timestamp', 0),
+            reverse=True
+        )
+        CHALLENGES.clear()
+        CHALLENGES.update(dict(sorted_challenges[:MAX_CHALLENGES]))
+
+    if len(CSRF_TOKENS) > MAX_CSRF_TOKENS:
+        # Sort by timestamp and keep only the newest MAX_CSRF_TOKENS
+        sorted_csrf = sorted(CSRF_TOKENS.items(), key=lambda x: x[1], reverse=True)
+        CSRF_TOKENS.clear()
+        CSRF_TOKENS.update(dict(sorted_csrf[:MAX_CSRF_TOKENS]))
+
+    # Cleanup old rate limit entries
+    for ip in list(RATE_LIMITS.keys()):
+        for endpoint in list(RATE_LIMITS[ip].keys()):
+            window_start = RATE_LIMITS[ip][endpoint].get('window_start', 0)
+            if current_time - window_start > RATE_LIMIT_WINDOW_SECONDS * 2:
+                RATE_LIMITS[ip].pop(endpoint, None)
+        # Remove IP if no endpoints remain
+        if not RATE_LIMITS[ip]:
+            RATE_LIMITS.pop(ip, None)
+
+
 def create_jwt(username: str) -> str:
     """Create JWT token for authenticated session"""
     expiry = datetime.utcnow() + timedelta(hours=CONFIG['SESSION_EXPIRY_HOURS'])
@@ -160,6 +285,59 @@ def get_origin(request: web.Request) -> str:
     host = request.headers.get('Host', 'localhost')
     scheme = request.headers.get('X-Forwarded-Proto', 'http')
     return f"{scheme}://{host}"
+
+
+# Rate limiting decorator
+
+def rate_limit(max_requests: int, window_seconds: int = RATE_LIMIT_WINDOW_SECONDS):
+    """
+    Rate limiting decorator for route handlers
+    Limits requests per IP address per endpoint
+    """
+    def decorator(handler):
+        async def wrapper(request: web.Request) -> web.Response:
+            client_ip = get_client_ip(request)
+            endpoint = request.path
+            current_time = time.time()
+
+            # Initialize rate limit tracking for this IP
+            if client_ip not in RATE_LIMITS:
+                RATE_LIMITS[client_ip] = {}
+
+            # Initialize tracking for this endpoint
+            if endpoint not in RATE_LIMITS[client_ip]:
+                RATE_LIMITS[client_ip][endpoint] = {
+                    'count': 0,
+                    'window_start': current_time
+                }
+
+            endpoint_data = RATE_LIMITS[client_ip][endpoint]
+
+            # Check if we're in a new window
+            if current_time - endpoint_data['window_start'] > window_seconds:
+                # Reset window
+                endpoint_data['count'] = 0
+                endpoint_data['window_start'] = current_time
+
+            # Check rate limit
+            if endpoint_data['count'] >= max_requests:
+                # Rate limit exceeded
+                retry_after = int(window_seconds - (current_time - endpoint_data['window_start'])) + 1
+                response = web.Response(
+                    text='Too many requests. Please try again later.',
+                    status=429
+                )
+                response.headers['Retry-After'] = str(retry_after)
+                return response
+
+            # Increment counter
+            endpoint_data['count'] += 1
+
+            # Call the actual handler
+            return await handler(request)
+
+        return wrapper
+    return decorator
 
 
 # HTML Templates
@@ -250,7 +428,7 @@ DARK_STYLE = """
 """
 
 
-def setup_page() -> str:
+def setup_page(csrf_token_id: str, csrf_token_value: str) -> str:
     """Initial setup page HTML"""
     return f"""
 <!DOCTYPE html>
@@ -284,7 +462,11 @@ def setup_page() -> str:
                 // Begin registration
                 const beginResp = await fetch('/api/register/begin', {{
                     method: 'POST',
-                    headers: {{'Content-Type': 'application/json'}},
+                    headers: {{
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token-ID': '{csrf_token_id}',
+                        'X-CSRF-Token-Value': '{csrf_token_value}'
+                    }},
                     body: JSON.stringify({{username}})
                 }});
 
@@ -314,7 +496,11 @@ def setup_page() -> str:
                 // Complete registration
                 const completeResp = await fetch('/api/register/complete', {{
                     method: 'POST',
-                    headers: {{'Content-Type': 'application/json'}},
+                    headers: {{
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token-ID': '{csrf_token_id}',
+                        'X-CSRF-Token-Value': '{csrf_token_value}'
+                    }},
                     body: JSON.stringify({{
                         credential: {{
                             id: credential.id,
@@ -355,7 +541,7 @@ def setup_page() -> str:
 """
 
 
-def login_page() -> str:
+def login_page(csrf_token_id: str, csrf_token_value: str) -> str:
     """Login page HTML"""
     return f"""
 <!DOCTYPE html>
@@ -382,7 +568,11 @@ def login_page() -> str:
             try {{
                 // Begin authentication
                 const beginResp = await fetch('/api/login/begin', {{
-                    method: 'POST'
+                    method: 'POST',
+                    headers: {{
+                        'X-CSRF-Token-ID': '{csrf_token_id}',
+                        'X-CSRF-Token-Value': '{csrf_token_value}'
+                    }}
                 }});
 
                 if (!beginResp.ok) {{
@@ -410,7 +600,11 @@ def login_page() -> str:
                 // Complete authentication
                 const completeResp = await fetch('/api/login/complete', {{
                     method: 'POST',
-                    headers: {{'Content-Type': 'application/json'}},
+                    headers: {{
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token-ID': '{csrf_token_id}',
+                        'X-CSRF-Token-Value': '{csrf_token_value}'
+                    }},
                     body: JSON.stringify({{
                         credential: {{
                             id: credential.id,
@@ -451,7 +645,7 @@ def login_page() -> str:
 """
 
 
-def register_page() -> str:
+def register_page(csrf_token_id: str, csrf_token_value: str) -> str:
     """Registration page for new users"""
     return f"""
 <!DOCTYPE html>
@@ -488,7 +682,11 @@ def register_page() -> str:
             
             try {{
                 const beginResp = await fetch('/api/register-auth/begin', {{
-                    method: 'POST'
+                    method: 'POST',
+                    headers: {{
+                        'X-CSRF-Token-ID': '{csrf_token_id}',
+                        'X-CSRF-Token-Value': '{csrf_token_value}'
+                    }}
                 }});
 
                 if (!beginResp.ok) {{
@@ -514,7 +712,11 @@ def register_page() -> str:
                 
                 const completeResp = await fetch('/api/register-auth/complete', {{
                     method: 'POST',
-                    headers: {{'Content-Type': 'application/json'}},
+                    headers: {{
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token-ID': '{csrf_token_id}',
+                        'X-CSRF-Token-Value': '{csrf_token_value}'
+                    }},
                     body: JSON.stringify({{
                         credential: {{
                             id: credential.id,
@@ -556,7 +758,11 @@ def register_page() -> str:
             try {{
                 const beginResp = await fetch('/api/register/begin', {{
                     method: 'POST',
-                    headers: {{'Content-Type': 'application/json'}},
+                    headers: {{
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token-ID': '{csrf_token_id}',
+                        'X-CSRF-Token-Value': '{csrf_token_value}'
+                    }},
                     body: JSON.stringify({{username}})
                 }});
 
@@ -583,7 +789,11 @@ def register_page() -> str:
                 
                 const completeResp = await fetch('/api/register/complete', {{
                     method: 'POST',
-                    headers: {{'Content-Type': 'application/json'}},
+                    headers: {{
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token-ID': '{csrf_token_id}',
+                        'X-CSRF-Token-Value': '{csrf_token_value}'
+                    }},
                     body: JSON.stringify({{
                         credential: {{
                             id: credential.id,
@@ -631,31 +841,44 @@ def register_page() -> str:
 
 # Route Handlers
 
+@rate_limit(RATE_LIMIT_PAGE_ENDPOINTS)
 async def handle_setup(request: web.Request) -> web.Response:
     """Show setup page if no credentials exist"""
     if not cred_store.is_empty():
         return web.HTTPFound('/plogin')
-    return web.Response(text=setup_page(), content_type='text/html')
+    csrf_token_id, csrf_token_value = generate_csrf_token()
+    return web.Response(text=setup_page(csrf_token_id, csrf_token_value), content_type='text/html')
 
 
+@rate_limit(RATE_LIMIT_PAGE_ENDPOINTS)
 async def handle_login(request: web.Request) -> web.Response:
     """Show login page"""
-    return web.Response(text=login_page(), content_type='text/html')
+    csrf_token_id, csrf_token_value = generate_csrf_token()
+    return web.Response(text=login_page(csrf_token_id, csrf_token_value), content_type='text/html')
 
 
+@rate_limit(RATE_LIMIT_PAGE_ENDPOINTS)
 async def handle_register_page(request: web.Request) -> web.Response:
     """Show registration page"""
     if cred_store.is_empty():
         return web.HTTPFound('/psetup')
-    return web.Response(text=register_page(), content_type='text/html')
+    csrf_token_id, csrf_token_value = generate_csrf_token()
+    return web.Response(text=register_page(csrf_token_id, csrf_token_value), content_type='text/html')
 
 
+@rate_limit(RATE_LIMIT_BEGIN_ENDPOINTS)
 async def handle_register_begin(request: web.Request) -> web.Response:
     """Begin WebAuthn registration"""
     try:
+        # Validate CSRF token
+        csrf_token_id = request.headers.get('X-CSRF-Token-ID')
+        csrf_token_value = request.headers.get('X-CSRF-Token-Value')
+        if not validate_csrf_token(csrf_token_id, csrf_token_value):
+            return web.Response(text='Invalid or expired CSRF token', status=403)
+
         data = await request.json()
         username = data.get('username', '').strip()
-        
+
         if not username:
             return web.Response(text='Username required', status=400)
         
@@ -695,9 +918,16 @@ async def handle_register_begin(request: web.Request) -> web.Response:
         return web.Response(text='Registration failed', status=500)
 
 
+@rate_limit(RATE_LIMIT_COMPLETE_ENDPOINTS)
 async def handle_register_complete(request: web.Request) -> web.Response:
     """Complete WebAuthn registration"""
     try:
+        # Validate CSRF token
+        csrf_token_id = request.headers.get('X-CSRF-Token-ID')
+        csrf_token_value = request.headers.get('X-CSRF-Token-Value')
+        if not validate_csrf_token(csrf_token_id, csrf_token_value):
+            return web.Response(text='Invalid or expired CSRF token', status=403)
+
         data = await request.json()
         credential = data.get('credential')
         username = data.get('username')
@@ -714,6 +944,11 @@ async def handle_register_complete(request: web.Request) -> web.Response:
 
         if not challenge_data:
             return web.Response(text='Challenge not found or expired', status=400)
+
+        # Validate challenge timestamp
+        if not validate_challenge_timestamp(challenge_data.get('timestamp', 0)):
+            CHALLENGES.pop(challenge_id, None)
+            return web.Response(text='Challenge has expired', status=400)
 
         # Verify it's a registration challenge for the right user
         if challenge_data.get('type') != 'registration' or challenge_data.get('username') != username:
@@ -750,9 +985,16 @@ async def handle_register_complete(request: web.Request) -> web.Response:
         return web.Response(text='Registration failed', status=500)
 
 
+@rate_limit(RATE_LIMIT_BEGIN_ENDPOINTS)
 async def handle_login_begin(request: web.Request) -> web.Response:
     """Begin WebAuthn authentication"""
     try:
+        # Validate CSRF token
+        csrf_token_id = request.headers.get('X-CSRF-Token-ID')
+        csrf_token_value = request.headers.get('X-CSRF-Token-Value')
+        if not validate_csrf_token(csrf_token_id, csrf_token_value):
+            return web.Response(text='Invalid or expired CSRF token', status=403)
+
         if cred_store.is_empty():
             return web.Response(text='No credentials registered', status=400)
         
@@ -791,9 +1033,16 @@ async def handle_login_begin(request: web.Request) -> web.Response:
         return web.Response(text='Authentication failed', status=500)
 
 
+@rate_limit(RATE_LIMIT_COMPLETE_ENDPOINTS)
 async def handle_login_complete(request: web.Request) -> web.Response:
     """Complete WebAuthn authentication"""
     try:
+        # Validate CSRF token
+        csrf_token_id = request.headers.get('X-CSRF-Token-ID')
+        csrf_token_value = request.headers.get('X-CSRF-Token-Value')
+        if not validate_csrf_token(csrf_token_id, csrf_token_value):
+            return web.Response(text='Invalid or expired CSRF token', status=403)
+
         data = await request.json()
         credential = data.get('credential')
         challenge_id = data.get('challenge_id')
@@ -816,6 +1065,11 @@ async def handle_login_complete(request: web.Request) -> web.Response:
 
         if not challenge_data:
             return web.Response(text='Challenge not found or expired', status=400)
+
+        # Validate challenge timestamp
+        if not validate_challenge_timestamp(challenge_data.get('timestamp', 0)):
+            CHALLENGES.pop(challenge_id, None)
+            return web.Response(text='Challenge has expired', status=400)
 
         # Verify it's an authentication challenge
         if challenge_data.get('type') != 'authentication':
@@ -851,7 +1105,7 @@ async def handle_login_complete(request: web.Request) -> web.Response:
             token,
             httponly=True,
             secure=True,
-            samesite='Lax',
+            samesite='Strict',  # Changed from 'Lax' to 'Strict' for better CSRF protection
             max_age=CONFIG['SESSION_EXPIRY_HOURS'] * 3600
         )
         
@@ -862,14 +1116,22 @@ async def handle_login_complete(request: web.Request) -> web.Response:
         return web.Response(text='Authentication failed', status=500)
 
 
+@rate_limit(RATE_LIMIT_BEGIN_ENDPOINTS)
 async def handle_register_auth_begin(request: web.Request) -> web.Response:
     """Begin authentication for registration (same as login)"""
     return await handle_login_begin(request)
 
 
+@rate_limit(RATE_LIMIT_COMPLETE_ENDPOINTS)
 async def handle_register_auth_complete(request: web.Request) -> web.Response:
     """Complete authentication for registration (no cookie needed)"""
     try:
+        # Validate CSRF token
+        csrf_token_id = request.headers.get('X-CSRF-Token-ID')
+        csrf_token_value = request.headers.get('X-CSRF-Token-Value')
+        if not validate_csrf_token(csrf_token_id, csrf_token_value):
+            return web.Response(text='Invalid or expired CSRF token', status=403)
+
         data = await request.json()
         credential = data.get('credential')
         challenge_id = data.get('challenge_id')
@@ -891,6 +1153,11 @@ async def handle_register_auth_complete(request: web.Request) -> web.Response:
 
         if not challenge_data:
             return web.Response(text='Challenge not found or expired', status=400)
+
+        # Validate challenge timestamp
+        if not validate_challenge_timestamp(challenge_data.get('timestamp', 0)):
+            CHALLENGES.pop(challenge_id, None)
+            return web.Response(text='Challenge has expired', status=400)
 
         # Verify it's an authentication challenge
         if challenge_data.get('type') != 'authentication':
@@ -1105,15 +1372,39 @@ async def setup_redirect_middleware(request: web.Request, handler):
 
 # Application setup
 
+async def cleanup_background_task(app: web.Application):
+    """Background task to cleanup expired items"""
+    async def cleanup_loop():
+        while True:
+            try:
+                await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
+                cleanup_expired_items()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Cleanup task error: {e}")
+
+    task = asyncio.create_task(cleanup_loop())
+    yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 def create_app() -> web.Application:
     """Create and configure the application"""
     app = web.Application(middlewares=[setup_redirect_middleware, auth_middleware])
-    
+
+    # Register background cleanup task
+    app.cleanup_ctx.append(cleanup_background_task)
+
     # Add routes
     app.router.add_get('/psetup', handle_setup)
     app.router.add_get('/plogin', handle_login)
     app.router.add_get('/pregister', handle_register_page)
-    
+
     # API routes
     app.router.add_post('/api/register/begin', handle_register_begin)
     app.router.add_post('/api/register/complete', handle_register_complete)
@@ -1121,15 +1412,28 @@ def create_app() -> web.Application:
     app.router.add_post('/api/login/complete', handle_login_complete)
     app.router.add_post('/api/register-auth/begin', handle_register_auth_begin)
     app.router.add_post('/api/register-auth/complete', handle_register_auth_complete)
-    
+
     # Proxy all other requests
     app.router.add_route('*', '/{path:.*}', handle_proxy)
-    
+
     return app
 
 
 def main():
     """Main entry point"""
+    # Validate JWT secret key
+    if not CONFIG['JWT_SECRET_KEY']:
+        print("\nERROR: JWT_SECRET_KEY must be explicitly set in .env file")
+        print("Generate a secure key with: python -c 'import secrets; print(secrets.token_urlsafe(32))'")
+        print("Then add to .env: JWT_SECRET_KEY=<generated_key>")
+        return
+
+    # Validate key is strong enough (at least 32 bytes when base64url decoded)
+    if len(CONFIG['JWT_SECRET_KEY']) < 43:  # 32 bytes base64url encoded is ~43 chars
+        print("\nWARNING: JWT_SECRET_KEY should be at least 32 bytes (256 bits)")
+        print("Current key length may be insecure. Generate a new key with:")
+        print("python -c 'import secrets; print(secrets.token_urlsafe(32))'")
+
     # Validate required config
     if not CONFIG['TARGET_HOST'] or not CONFIG['TARGET_PORT']:
         logger.error("TARGET_HOST and TARGET_PORT must be set")

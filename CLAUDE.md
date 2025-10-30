@@ -6,49 +6,72 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Passkey-authenticated HTTP reverse proxy - a single-file Python implementation for home/hobby use. The proxy sits in front of a target application and requires WebAuthn (passkey) authentication before allowing access.
 
+**Security Hardening**: As of the latest version, the proxy includes comprehensive security measures: HMAC-based CSRF protection, rate limiting, challenge expiration, strict SameSite cookies, and mandatory JWT secret validation.
+
 ## Architecture
 
 ### Single-File Design
-The entire application is contained in `main.py` (~1050 lines). This design choice prioritizes simplicity and ease of deployment for home/hobby use.
+The entire application is contained in `main.py` (~1460 lines). This design choice prioritizes simplicity and ease of deployment for home/hobby use.
 
 ### Core Components
 
-1. **CredentialStore** (lines 56-121)
+1. **CredentialStore** (lines 72-138)
    - Manages passkey credentials in a JSON file
    - Stores credential ID, public key, sign count, username, and metadata
    - File permissions set to 0o600 for security
 
-2. **Authentication Flow**
-   - Uses WebAuthn for passkey registration and authentication
-   - JWT tokens for session management (stored in HTTP-only cookies)
-   - Two-step registration: existing users must authenticate before registering new users
+2. **Security Layer** (lines 146-240)
+   - CSRF token generation and validation (HMAC-SHA256 based, 10-minute expiry, reusable per page session)
+   - Challenge timestamp validation (60-second expiry)
+   - Rate limiting decorator (IP-based, configurable limits)
+   - Background cleanup task for expired items
+   - Client IP extraction with X-Forwarded-For support
 
-3. **Middleware Stack** (lines 959-991)
+3. **Authentication Flow**
+   - Uses WebAuthn for passkey registration and authentication
+   - JWT tokens for session management (stored in HTTP-only, Strict SameSite cookies)
+   - Two-step registration: existing users must authenticate before registering new users
+   - All state-changing endpoints validate CSRF tokens
+
+4. **Middleware Stack** (lines 1328-1356)
    - `setup_redirect_middleware`: Redirects to /psetup if no credentials exist
    - `auth_middleware`: Validates JWT tokens, redirects unauthenticated users to /plogin
    - Both middlewares skip auth/setup pages and API endpoints
 
-4. **Proxy Handler** (lines 905-954)
+5. **Proxy Handler** (lines 1173-1326)
    - Forwards all authenticated requests to TARGET_HOST:TARGET_PORT
    - Adds `X-Forwarded-User`, `X-Forwarded-For`, `X-Forwarded-Proto` headers
    - Streams responses from target to client
+   - Supports WebSocket connections
 
-5. **Challenge Management**
-   - In-memory dictionary `CHALLENGES` stores WebAuthn challenges (line 53)
+6. **Challenge Management**
+   - In-memory dictionary `CHALLENGES` stores WebAuthn challenges (line 67)
    - Each challenge includes: challenge bytes, username (for registration), timestamp, and type
-   - Challenges are single-use and cleaned up after verification
+   - Challenges expire after 60 seconds and are single-use
+   - Background cleanup task runs every 30 seconds
+   - Maximum 1000 challenges to prevent memory exhaustion
 
 ### Configuration
 
-All configuration is loaded from environment variables (lines 40-50):
+All configuration is loaded from environment variables (lines 42-51):
 - `PROXY_LISTEN_HOST/PORT`: Where the proxy listens
 - `TARGET_HOST/PORT`: Backend application to protect
-- `JWT_SECRET_KEY`: Session token signing key
+- `JWT_SECRET_KEY`: **REQUIRED** - Session token signing key (must be explicitly set, minimum 32 bytes)
 - `SESSION_EXPIRY_HOURS`: How long sessions last
 - `RP_NAME`: WebAuthn relying party name
 - `CREDENTIALS_FILE`: Where to store passkey credentials
 
-Configuration is loaded from `.env` file via `python-dotenv` (line 33-34).
+Configuration is loaded from `.env` file via `python-dotenv` (line 34-35).
+
+### Security Constants (lines 53-64)
+
+- `CHALLENGE_EXPIRY_SECONDS`: 60 seconds
+- `CSRF_TOKEN_EXPIRY_SECONDS`: 600 seconds (10 minutes)
+- `MAX_CHALLENGES`: 1000 (memory limit)
+- `MAX_CSRF_TOKENS`: 1000 (memory limit)
+- `CLEANUP_INTERVAL_SECONDS`: 30 seconds
+- Rate limiting: BEGIN (10/min), COMPLETE (20/min), PAGES (30/min)
+- `RATE_LIMIT_WINDOW_SECONDS`: 60 seconds
 
 ### Routes
 
@@ -94,9 +117,13 @@ The project requires Python >=3.11 (specified in pyproject.toml).
 
 ## Important Notes
 
-- **Single-file architecture**: All code is in `main.py` - do not split into modules unless explicitly requested
+- **Single-file architecture**: All code is in `main.py` (~1460 lines after security hardening) - do not split into modules unless explicitly requested
 - **Security credentials**: `credentials.json` and `.env` contain secrets and should never be committed
-- **Challenge storage**: Currently in-memory only - all challenges are lost on restart
+- **In-memory state**: Challenges, CSRF tokens, and rate limits stored in-memory - lost on restart (acceptable for this use case)
 - **No database**: Uses JSON file storage for simplicity
-- **Logging**: Configured to ERROR level only (line 37) to reduce noise
-- **Session cookies**: Secure flag set to True (line 837) - requires HTTPS in production
+- **Logging**: Configured to ERROR level only (line 38) to reduce noise
+- **Session cookies**: HTTP-only, Secure, and SameSite=Strict flags set (line 1017)
+- **CSRF protection**: All state-changing endpoints require HMAC-based CSRF token validation via HTTP headers. Tokens are cryptographically bound using HMAC-SHA256 with JWT_SECRET_KEY, reusable per page session, and expire after 10 minutes
+- **Rate limiting**: Applied to all page and API endpoints using decorator pattern
+- **Background tasks**: Cleanup task registered with app.cleanup_ctx for automatic lifecycle management
+- **JWT validation**: Application fails fast on startup if JWT_SECRET_KEY is not set or too weak
