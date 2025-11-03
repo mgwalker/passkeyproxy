@@ -6,12 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Passkey-authenticated HTTP reverse proxy - a single-file Python implementation for home/hobby use. The proxy sits in front of a target application and requires WebAuthn (passkey) authentication before allowing access.
 
-**Security Hardening**: As of the latest version, the proxy includes comprehensive security measures: HMAC-based CSRF protection, rate limiting, challenge expiration, strict SameSite cookies, and mandatory JWT secret validation.
+**Security Hardening**: As of the latest version, the proxy includes comprehensive security measures: HMAC-based CSRF protection, rate limiting, challenge expiration, strict SameSite cookies, mandatory JWT secret validation, and security/audit logging.
 
 ## Architecture
 
 ### Single-File Design
-The entire application is contained in `main.py` (~1460 lines). This design choice prioritizes simplicity and ease of deployment for home/hobby use.
+The entire application is contained in `main.py` (~1568 lines). This design choice prioritizes simplicity and ease of deployment for home/hobby use.
 
 ### Core Components
 
@@ -53,15 +53,16 @@ The entire application is contained in `main.py` (~1460 lines). This design choi
 
 ### Configuration
 
-All configuration is loaded from environment variables (lines 42-51):
+All configuration is loaded from environment variables (lines 44-53):
 - `PROXY_LISTEN_HOST/PORT`: Where the proxy listens
 - `TARGET_HOST/PORT`: Backend application to protect
 - `JWT_SECRET_KEY`: **REQUIRED** - Session token signing key (must be explicitly set, minimum 32 bytes)
 - `SESSION_EXPIRY_HOURS`: How long sessions last
 - `RP_NAME`: WebAuthn relying party name
 - `CREDENTIALS_FILE`: Where to store passkey credentials
+- `LOG_LEVEL`: Logging verbosity (default: INFO, options: DEBUG/INFO/WARNING/ERROR)
 
-Configuration is loaded from `.env` file via `python-dotenv` (line 34-35).
+Configuration is loaded from `.env` file via `python-dotenv` (line 36-37).
 
 ### Security Constants (lines 53-64)
 
@@ -91,10 +92,32 @@ Configuration is loaded from `.env` file via `python-dotenv` (line 34-35).
 ### WebAuthn Implementation
 
 - Uses `py_webauthn` library (imported as `webauthn`)
-- RP ID extracted from Host header (lines 150-154)
-- Origin derived from Host + X-Forwarded-Proto headers (lines 157-161)
+- RP ID extracted from Host header
+- Origin derived from Host + X-Forwarded-Proto headers
 - Supports resident keys (preferred) and user verification (preferred)
 - Sign count validation to detect credential cloning attacks
+
+### Logging Implementation
+
+The application includes comprehensive security/audit logging:
+
+**Log Levels:**
+- **INFO** (default): Authentication success/failure, user registration, session issues, credential operations, startup/config
+- **WARNING**: CSRF failures, rate limits, challenge validation errors, sign count anomalies, memory limit enforcement
+- **DEBUG**: Proxy requests, WebSocket lifecycle, cleanup operations (verbose)
+- **ERROR**: Exceptions and critical errors
+
+**Key Features:**
+- All client IP addresses use `get_client_ip()` helper which respects X-Forwarded-For header
+- Credential IDs truncated to first 8 chars via `format_credential_id()` helper
+- Old-school Unix text format (no JSON)
+- Single line per event, grep-friendly
+- Log format: `%(asctime)s - %(levelname)s - %(message)s`
+
+**Logging Configuration:**
+- Configured at startup (lines 40-44) with LOG_LEVEL env var
+- Default level: INFO
+- Structured for security auditing without excessive verbosity
 
 ## Development Commands
 
@@ -117,12 +140,12 @@ The project requires Python >=3.11 (specified in pyproject.toml).
 
 ## Important Notes
 
-- **Single-file architecture**: All code is in `main.py` (~1460 lines after security hardening) - do not split into modules unless explicitly requested
+- **Single-file architecture**: All code is in `main.py` (~1568 lines with logging) - do not split into modules unless explicitly requested
 - **Security credentials**: `credentials.json` and `.env` contain secrets and should never be committed
 - **In-memory state**: Challenges, CSRF tokens, and rate limits stored in-memory - lost on restart (acceptable for this use case)
 - **No database**: Uses JSON file storage for simplicity
-- **Logging**: Configured to ERROR level only (line 38) to reduce noise
-- **Session cookies**: HTTP-only, Secure, and SameSite=Strict flags set (line 1017)
+- **Logging**: Configured to INFO level by default (lines 40-44) for security/audit events. Use LOG_LEVEL env var to adjust (DEBUG/INFO/WARNING/ERROR)
+- **Session cookies**: HTTP-only, Secure, and SameSite=Strict flags set
 - **CSRF protection**: All state-changing endpoints require HMAC-based CSRF token validation via HTTP headers. Tokens are cryptographically bound using HMAC-SHA256 with JWT_SECRET_KEY, reusable per page session, and expire after 10 minutes
 - **Rate limiting**: Applied to all page and API endpoints using decorator pattern
 - **Background tasks**: Cleanup task registered with app.cleanup_ctx for automatic lifecycle management

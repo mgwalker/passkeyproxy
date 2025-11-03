@@ -17,6 +17,7 @@ This guide explains how to run the Passkey Proxy using Docker.
    TARGET_PORT=3000
    SESSION_EXPIRY_HOURS=24
    RP_NAME=Passkey Proxy
+   LOG_LEVEL=INFO
    EOF
    ```
 
@@ -33,6 +34,13 @@ This guide explains how to run the Passkey Proxy using Docker.
    ```bash
    docker-compose logs -f passkeyproxy
    ```
+
+   The proxy logs security/audit events by default at INFO level, including:
+   - Authentication success/failure with user and IP
+   - Registration events
+   - Security warnings (rate limits, CSRF failures, sign count anomalies)
+
+   For verbose request logging, set `LOG_LEVEL=DEBUG` in your `.env` file.
 
 ## Manual Docker Commands
 
@@ -74,6 +82,7 @@ docker run -d \
 | `SESSION_EXPIRY_HOURS` | Session duration in hours | `24` |
 | `RP_NAME` | WebAuthn relying party name | `Passkey Proxy` |
 | `CREDENTIALS_FILE` | Path to credentials storage | `/app/data/credentials.json` |
+| `LOG_LEVEL` | Logging verbosity | `INFO` (options: `DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 
 ### Volumes
 

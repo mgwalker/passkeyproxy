@@ -119,6 +119,7 @@ All configuration is done via environment variables (or `.env` file):
 | `JWT_SECRET_KEY` | **Required** | Secret key for signing session tokens (min 32 bytes) |
 | `RP_NAME` | `Passkey Proxy` | Display name shown during authentication |
 | `CREDENTIALS_FILE` | `./credentials.json` | Where to store passkey credentials |
+| `LOG_LEVEL` | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
 ## Architecture
 
@@ -298,11 +299,43 @@ docker run -d \
 - **JWT_SECRET_KEY**: **Required** - Must be explicitly set. Generate with: `python -c 'import secrets; print(secrets.token_urlsafe(32))'`
 - **File Permissions**: Ensure `credentials.json` and `.env` are protected (chmod 600)
 - **Backups**: Regularly backup `credentials.json`
-- **Logging**: Currently set to ERROR level only; adjust if needed
+- **Logging**: Defaults to INFO level (security/audit events). Set `LOG_LEVEL=DEBUG` for verbose proxy access logs, or `LOG_LEVEL=WARNING` for errors only
 - **Challenge Storage**: In-memory only; challenges expire after 60 seconds and are automatically cleaned up
 - **Rate Limiting**: Limits are per IP address - adjust constants in main.py if needed for your use case
 
 ## Advanced Usage
+
+### Logging & Monitoring
+
+The proxy includes comprehensive security/audit logging at the INFO level:
+
+**Authentication Events:**
+- User login success/failure (with username, IP, credential ID)
+- User registration (initial admin and subsequent users)
+- Session validation failures
+
+**Security Events:**
+- CSRF token validation failures
+- Rate limit exceeded events
+- Challenge validation failures (expired, not found, type mismatch)
+- Sign count anomalies (potential credential cloning)
+
+**Operational Events:**
+- Service startup with configuration summary
+- Credential store operations
+
+**Debug-Level Logs** (set `LOG_LEVEL=DEBUG`):
+- All proxied HTTP requests (method, path, user, IP)
+- WebSocket connection lifecycle (open/close with duration)
+- Periodic cleanup operations
+
+**Log Format:**
+```
+2025-01-15 10:23:45 - INFO - User 'alice' authenticated from 192.168.1.100 (credential: w7k9mPqR)
+2025-01-15 10:24:12 - WARNING - Rate limit exceeded from 192.168.1.50 for /api/login/begin (retry after 45s)
+```
+
+All logs include client IP addresses (respecting `X-Forwarded-For` header) for audit purposes.
 
 ### Headers Forwarded to Target
 
@@ -407,7 +440,6 @@ To protect multiple applications, run multiple instances with different:
 - **In-memory state**: Challenges, CSRF tokens, and rate limits lost on restart (acceptable for this use case)
 - **File-based storage**: Not suitable for thousands of users
 - **IP-based rate limiting**: Shared NAT/proxy can affect multiple users
-- **No audit logging**: Only error logs by default (no authentication event logs)
 
 ## Contributing
 

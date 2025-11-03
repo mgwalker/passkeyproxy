@@ -36,8 +36,11 @@ from webauthn.helpers.structs import (
 from dotenv import load_dotenv
 load_dotenv()
 
-# Configure logging (errors only)
-logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configure logging
+logging.basicConfig(
+    level=getattr(logging, os.getenv('LOG_LEVEL', 'INFO')),
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Load configuration from environment variables
@@ -106,11 +109,12 @@ class CredentialStore:
         """Check if there are no credentials"""
         return len(self.credentials) == 0
     
-    def add_credential(self, credential_id: bytes, public_key: bytes, 
+    def add_credential(self, credential_id: bytes, public_key: bytes,
                       username: str, sign_count: int, credential_data: dict):
         """Add a new credential"""
+        cred_id_b64 = bytes_to_base64url(credential_id)
         self.credentials.append({
-            'id': bytes_to_base64url(credential_id),
+            'id': cred_id_b64,
             'public_key': bytes_to_base64url(public_key),
             'sign_count': sign_count,
             'username': username,
@@ -118,6 +122,7 @@ class CredentialStore:
             'created_at': datetime.utcnow().isoformat()
         })
         self._save()
+        logger.info(f"Credential stored for user '{username}' (credential: {format_credential_id(cred_id_b64)})")
     
     def get_all_credentials(self) -> List[dict]:
         """Get all credentials for authentication"""
@@ -135,8 +140,16 @@ class CredentialStore:
         """Update sign count for a credential"""
         cred = self.get_credential_by_id(credential_id)
         if cred:
+            old_count = cred['sign_count']
             cred['sign_count'] = sign_count
             self._save()
+            logger.info(f"Sign count updated for user '{cred['username']}' (credential: {format_credential_id(cred['id'])}, count: {sign_count})")
+
+            # Check for sign count anomaly (possible credential cloning)
+            # Only check if both old and new counts are non-zero (authenticator supports sign count)
+            # Per WebAuthn spec, sign_count=0 means "not supported"
+            if old_count > 0 and sign_count > 0 and sign_count <= old_count:
+                logger.warning(f"Sign count anomaly for user '{cred['username']}' (expected > {old_count}, got {sign_count}) - possible credential cloning")
 
 
 # Initialize credential store
@@ -203,6 +216,11 @@ def get_client_ip(request: web.Request) -> str:
     return request.remote or 'unknown'
 
 
+def format_credential_id(cred_id: str) -> str:
+    """Format credential ID for logging (first 8 chars only)"""
+    return cred_id[:8] if cred_id else 'unknown'
+
+
 def cleanup_expired_items():
     """Remove expired challenges, CSRF tokens, and rate limit entries"""
     current_time = time.time()
@@ -223,8 +241,13 @@ def cleanup_expired_items():
     for tid in expired_csrf:
         CSRF_TOKENS.pop(tid, None)
 
+    # Track cleanup for DEBUG logging
+    challenges_pruned = 0
+    csrf_pruned = 0
+
     # Enforce max limits (remove oldest if over limit)
     if len(CHALLENGES) > MAX_CHALLENGES:
+        before = len(CHALLENGES)
         # Sort by timestamp and keep only the newest MAX_CHALLENGES
         sorted_challenges = sorted(
             CHALLENGES.items(),
@@ -233,22 +256,34 @@ def cleanup_expired_items():
         )
         CHALLENGES.clear()
         CHALLENGES.update(dict(sorted_challenges[:MAX_CHALLENGES]))
+        challenges_pruned = before - len(CHALLENGES)
+        logger.warning(f"Challenge storage limit reached, pruned {challenges_pruned} expired entries")
 
     if len(CSRF_TOKENS) > MAX_CSRF_TOKENS:
+        before = len(CSRF_TOKENS)
         # Sort by timestamp and keep only the newest MAX_CSRF_TOKENS
         sorted_csrf = sorted(CSRF_TOKENS.items(), key=lambda x: x[1], reverse=True)
         CSRF_TOKENS.clear()
         CSRF_TOKENS.update(dict(sorted_csrf[:MAX_CSRF_TOKENS]))
+        csrf_pruned = before - len(CSRF_TOKENS)
+        logger.warning(f"CSRF token storage limit reached, pruned {csrf_pruned} expired entries")
 
     # Cleanup old rate limit entries
+    rate_limits_cleaned = 0
     for ip in list(RATE_LIMITS.keys()):
         for endpoint in list(RATE_LIMITS[ip].keys()):
             window_start = RATE_LIMITS[ip][endpoint].get('window_start', 0)
             if current_time - window_start > RATE_LIMIT_WINDOW_SECONDS * 2:
                 RATE_LIMITS[ip].pop(endpoint, None)
+                rate_limits_cleaned += 1
         # Remove IP if no endpoints remain
         if not RATE_LIMITS[ip]:
             RATE_LIMITS.pop(ip, None)
+
+    # DEBUG logging for regular cleanup (only if something was cleaned)
+    total_cleaned = len(expired_challenges) + len(expired_csrf) + rate_limits_cleaned
+    if total_cleaned > 0:
+        logger.debug(f"Cleanup: removed {len(expired_challenges)} challenges, {len(expired_csrf)} CSRF tokens, {rate_limits_cleaned} rate limit entries")
 
 
 def create_jwt(username: str) -> str:
@@ -323,6 +358,7 @@ def rate_limit(max_requests: int, window_seconds: int = RATE_LIMIT_WINDOW_SECOND
             if endpoint_data['count'] >= max_requests:
                 # Rate limit exceeded
                 retry_after = int(window_seconds - (current_time - endpoint_data['window_start'])) + 1
+                logger.warning(f"Rate limit exceeded from {client_ip} for {endpoint} (retry after {retry_after}s)")
                 response = web.Response(
                     text='Too many requests. Please try again later.',
                     status=429
@@ -874,6 +910,9 @@ async def handle_register_begin(request: web.Request) -> web.Response:
         csrf_token_id = request.headers.get('X-CSRF-Token-ID')
         csrf_token_value = request.headers.get('X-CSRF-Token-Value')
         if not validate_csrf_token(csrf_token_id, csrf_token_value):
+            client_ip = get_client_ip(request)
+            reason = 'missing' if not csrf_token_id or not csrf_token_value else 'invalid/expired'
+            logger.warning(f"CSRF token validation failed from {client_ip} for /api/register/begin (reason: {reason})")
             return web.Response(text='Invalid or expired CSRF token', status=403)
 
         data = await request.json()
@@ -921,11 +960,18 @@ async def handle_register_begin(request: web.Request) -> web.Response:
 @rate_limit(RATE_LIMIT_COMPLETE_ENDPOINTS)
 async def handle_register_complete(request: web.Request) -> web.Response:
     """Complete WebAuthn registration"""
+    username = 'unknown'
+    client_ip = 'unknown'
     try:
+        # Extract client IP early for exception handler
+        client_ip = get_client_ip(request)
+
         # Validate CSRF token
         csrf_token_id = request.headers.get('X-CSRF-Token-ID')
         csrf_token_value = request.headers.get('X-CSRF-Token-Value')
         if not validate_csrf_token(csrf_token_id, csrf_token_value):
+            reason = 'missing' if not csrf_token_id or not csrf_token_value else 'invalid/expired'
+            logger.warning(f"CSRF token validation failed from {client_ip} for /api/register/complete (reason: {reason})")
             return web.Response(text='Invalid or expired CSRF token', status=403)
 
         data = await request.json()
@@ -943,15 +989,25 @@ async def handle_register_complete(request: web.Request) -> web.Response:
         challenge_data = CHALLENGES.get(challenge_id)
 
         if not challenge_data:
+            client_ip = get_client_ip(request)
+            logger.warning(f"Challenge not found from {client_ip} for registration")
             return web.Response(text='Challenge not found or expired', status=400)
 
         # Validate challenge timestamp
         if not validate_challenge_timestamp(challenge_data.get('timestamp', 0)):
+            client_ip = get_client_ip(request)
+            age = int(time.time() - challenge_data.get('timestamp', 0))
+            logger.warning(f"Expired registration challenge from {client_ip} (age: {age}s)")
             CHALLENGES.pop(challenge_id, None)
             return web.Response(text='Challenge has expired', status=400)
 
         # Verify it's a registration challenge for the right user
         if challenge_data.get('type') != 'registration' or challenge_data.get('username') != username:
+            client_ip = get_client_ip(request)
+            if challenge_data.get('type') != 'registration':
+                logger.warning(f"Challenge type mismatch from {client_ip} (expected: registration, got: {challenge_data.get('type')})")
+            else:
+                logger.warning(f"Challenge username mismatch from {client_ip} for registration")
             CHALLENGES.pop(challenge_id, None)
             return web.Response(text='Invalid challenge', status=400)
 
@@ -977,11 +1033,20 @@ async def handle_register_complete(request: web.Request) -> web.Response:
             sign_count=verification.sign_count,
             credential_data=credential
         )
-        
+
+        # Log successful registration
+        client_ip = get_client_ip(request)
+        cred_id_short = format_credential_id(bytes_to_base64url(verification.credential_id))
+        # Check if this is initial setup or new user registration
+        if len(cred_store.credentials) == 1:
+            logger.info(f"Initial admin '{username}' registered from {client_ip} (credential: {cred_id_short})")
+        else:
+            logger.info(f"User '{username}' registered from {client_ip} (credential: {cred_id_short})")
+
         return web.Response(text='Registration successful', status=200)
-        
+
     except Exception as e:
-        logger.error(f"Registration complete error: {e}")
+        logger.warning(f"Registration failed for user '{username}' from {client_ip}: {str(e)}")
         return web.Response(text='Registration failed', status=500)
 
 
@@ -993,6 +1058,9 @@ async def handle_login_begin(request: web.Request) -> web.Response:
         csrf_token_id = request.headers.get('X-CSRF-Token-ID')
         csrf_token_value = request.headers.get('X-CSRF-Token-Value')
         if not validate_csrf_token(csrf_token_id, csrf_token_value):
+            client_ip = get_client_ip(request)
+            reason = 'missing' if not csrf_token_id or not csrf_token_value else 'invalid/expired'
+            logger.warning(f"CSRF token validation failed from {client_ip} for /api/login/begin (reason: {reason})")
             return web.Response(text='Invalid or expired CSRF token', status=403)
 
         if cred_store.is_empty():
@@ -1036,11 +1104,18 @@ async def handle_login_begin(request: web.Request) -> web.Response:
 @rate_limit(RATE_LIMIT_COMPLETE_ENDPOINTS)
 async def handle_login_complete(request: web.Request) -> web.Response:
     """Complete WebAuthn authentication"""
+    cred_id_short = 'unknown'
+    client_ip = 'unknown'
     try:
+        # Extract client IP early for exception handler
+        client_ip = get_client_ip(request)
+
         # Validate CSRF token
         csrf_token_id = request.headers.get('X-CSRF-Token-ID')
         csrf_token_value = request.headers.get('X-CSRF-Token-Value')
         if not validate_csrf_token(csrf_token_id, csrf_token_value):
+            reason = 'missing' if not csrf_token_id or not csrf_token_value else 'invalid/expired'
+            logger.warning(f"CSRF token validation failed from {client_ip} for /api/login/complete (reason: {reason})")
             return web.Response(text='Invalid or expired CSRF token', status=403)
 
         data = await request.json()
@@ -1055,6 +1130,7 @@ async def handle_login_complete(request: web.Request) -> web.Response:
 
         # Find credential in store
         cred_id = base64url_to_bytes(credential['rawId'])
+        cred_id_short = format_credential_id(credential['rawId'])
         stored_cred = cred_store.get_credential_by_id(cred_id)
 
         if not stored_cred:
@@ -1064,15 +1140,22 @@ async def handle_login_complete(request: web.Request) -> web.Response:
         challenge_data = CHALLENGES.get(challenge_id)
 
         if not challenge_data:
+            client_ip = get_client_ip(request)
+            logger.warning(f"Challenge not found from {client_ip} for authentication")
             return web.Response(text='Challenge not found or expired', status=400)
 
         # Validate challenge timestamp
         if not validate_challenge_timestamp(challenge_data.get('timestamp', 0)):
+            client_ip = get_client_ip(request)
+            age = int(time.time() - challenge_data.get('timestamp', 0))
+            logger.warning(f"Expired authentication challenge from {client_ip} (age: {age}s)")
             CHALLENGES.pop(challenge_id, None)
             return web.Response(text='Challenge has expired', status=400)
 
         # Verify it's an authentication challenge
         if challenge_data.get('type') != 'authentication':
+            client_ip = get_client_ip(request)
+            logger.warning(f"Challenge type mismatch from {client_ip} (expected: authentication, got: {challenge_data.get('type')})")
             CHALLENGES.pop(challenge_id, None)
             return web.Response(text='Invalid challenge', status=400)
 
@@ -1094,10 +1177,15 @@ async def handle_login_complete(request: web.Request) -> web.Response:
         
         # Update sign count
         cred_store.update_sign_count(cred_id, verification.new_sign_count)
-        
+
+        # Log successful authentication
+        client_ip = get_client_ip(request)
+        cred_id_short = format_credential_id(stored_cred['id'])
+        logger.info(f"User '{stored_cred['username']}' authenticated from {client_ip} (credential: {cred_id_short})")
+
         # Create JWT
         token = create_jwt(stored_cred['username'])
-        
+
         # Set cookie
         response = web.Response(text='Authentication successful', status=200)
         response.set_cookie(
@@ -1110,9 +1198,9 @@ async def handle_login_complete(request: web.Request) -> web.Response:
         )
         
         return response
-        
+
     except Exception as e:
-        logger.error(f"Login complete error: {e}")
+        logger.warning(f"Authentication failed from {client_ip} (credential: {cred_id_short}): {str(e)}")
         return web.Response(text='Authentication failed', status=500)
 
 
@@ -1130,6 +1218,9 @@ async def handle_register_auth_complete(request: web.Request) -> web.Response:
         csrf_token_id = request.headers.get('X-CSRF-Token-ID')
         csrf_token_value = request.headers.get('X-CSRF-Token-Value')
         if not validate_csrf_token(csrf_token_id, csrf_token_value):
+            client_ip = get_client_ip(request)
+            reason = 'missing' if not csrf_token_id or not csrf_token_value else 'invalid/expired'
+            logger.warning(f"CSRF token validation failed from {client_ip} for /api/register-auth/complete (reason: {reason})")
             return web.Response(text='Invalid or expired CSRF token', status=403)
 
         data = await request.json()
@@ -1152,15 +1243,22 @@ async def handle_register_auth_complete(request: web.Request) -> web.Response:
         challenge_data = CHALLENGES.get(challenge_id)
 
         if not challenge_data:
+            client_ip = get_client_ip(request)
+            logger.warning(f"Challenge not found from {client_ip} for authentication")
             return web.Response(text='Challenge not found or expired', status=400)
 
         # Validate challenge timestamp
         if not validate_challenge_timestamp(challenge_data.get('timestamp', 0)):
+            client_ip = get_client_ip(request)
+            age = int(time.time() - challenge_data.get('timestamp', 0))
+            logger.warning(f"Expired authentication challenge from {client_ip} (age: {age}s)")
             CHALLENGES.pop(challenge_id, None)
             return web.Response(text='Challenge has expired', status=400)
 
         # Verify it's an authentication challenge
         if challenge_data.get('type') != 'authentication':
+            client_ip = get_client_ip(request)
+            logger.warning(f"Challenge type mismatch from {client_ip} (expected: authentication, got: {challenge_data.get('type')})")
             CHALLENGES.pop(challenge_id, None)
             return web.Response(text='Invalid challenge', status=400)
 
@@ -1194,6 +1292,11 @@ async def handle_websocket_proxy(request: web.Request) -> web.WebSocketResponse:
     """Proxy WebSocket connections to target application"""
     # Get authenticated username
     username = request.get('authenticated_user', 'unknown')
+    client_ip = get_client_ip(request)
+    start_time = time.time()
+
+    # DEBUG logging for WebSocket connection opened
+    logger.debug(f"WebSocket opened: {username} -> {request.path} from {client_ip}")
 
     # Accept WebSocket connection from client
     client_ws = web.WebSocketResponse()
@@ -1273,6 +1376,10 @@ async def handle_websocket_proxy(request: web.Request) -> web.WebSocketResponse:
         if not client_ws.closed:
             await client_ws.close()
 
+        # DEBUG logging for WebSocket connection closed
+        duration = int(time.time() - start_time)
+        logger.debug(f"WebSocket closed: {username} from {client_ip} (duration: {duration}s)")
+
     return client_ws
 
 
@@ -1286,9 +1393,13 @@ async def handle_proxy(request: web.Request) -> web.Response:
 
         # Build target URL
         target_url = f"http://{CONFIG['TARGET_HOST']}:{CONFIG['TARGET_PORT']}{request.path_qs}"
-        
+
         # Get authenticated username
         username = request.get('authenticated_user', 'unknown')
+        client_ip = get_client_ip(request)
+
+        # DEBUG logging for proxy requests
+        logger.debug(f"Proxy: {username} {request.method} {request.path} from {client_ip}")
         
         # Prepare headers
         headers = dict(request.headers)
@@ -1341,23 +1452,27 @@ async def auth_middleware(request: web.Request, handler):
     # Skip auth for setup and API endpoints
     if request.path in ['/psetup', '/plogin', '/pregister'] or request.path.startswith('/api/'):
         return await handler(request)
-    
+
     # Check for valid JWT
     token = request.cookies.get('session')
 
     if not token:
+        client_ip = get_client_ip(request)
+        logger.warning(f"Missing session token from {client_ip} attempting {request.path}")
         return web.HTTPFound('/plogin')
 
     payload = verify_jwt(token)
     if not payload:
         # Clear invalid cookie
+        client_ip = get_client_ip(request)
+        logger.warning(f"Invalid/expired session token from {client_ip} attempting {request.path}")
         response = web.HTTPFound('/plogin')
         response.del_cookie('session')
         return response
-    
+
     # Store username in request
     request['authenticated_user'] = payload['username']
-    
+
     return await handler(request)
 
 
@@ -1430,24 +1545,21 @@ def main():
 
     # Validate key is strong enough (at least 32 bytes when base64url decoded)
     if len(CONFIG['JWT_SECRET_KEY']) < 43:  # 32 bytes base64url encoded is ~43 chars
-        print("\nWARNING: JWT_SECRET_KEY should be at least 32 bytes (256 bits)")
-        print("Current key length may be insecure. Generate a new key with:")
-        print("python -c 'import secrets; print(secrets.token_urlsafe(32))'")
+        logger.warning("JWT_SECRET_KEY is shorter than recommended 32 bytes (256 bits)")
+        print("Generate a new key with: python -c 'import secrets; print(secrets.token_urlsafe(32))'")
 
     # Validate required config
     if not CONFIG['TARGET_HOST'] or not CONFIG['TARGET_PORT']:
         logger.error("TARGET_HOST and TARGET_PORT must be set")
         return
-    
-    print(f"Starting Passkey Proxy on {CONFIG['PROXY_LISTEN_HOST']}:{CONFIG['PROXY_LISTEN_PORT']}")
-    print(f"Proxying to {CONFIG['TARGET_HOST']}:{CONFIG['TARGET_PORT']}")
-    print(f"Session expiry: {CONFIG['SESSION_EXPIRY_HOURS']} hours")
-    print(f"Credentials file: {CONFIG['CREDENTIALS_FILE']}")
-    
+
+    logger.info(f"Passkey Proxy starting on {CONFIG['PROXY_LISTEN_HOST']}:{CONFIG['PROXY_LISTEN_PORT']}, proxying to {CONFIG['TARGET_HOST']}:{CONFIG['TARGET_PORT']}")
+    logger.info(f"Session expiry: {CONFIG['SESSION_EXPIRY_HOURS']} hours")
+
     if cred_store.is_empty():
-        print("\nNo credentials found. Please visit /psetup to register the first user.")
+        logger.info("No credentials found, first-time setup required at /psetup")
     else:
-        print(f"\nFound {len(cred_store.credentials)} registered user(s).")
+        logger.info(f"Loaded {len(cred_store.credentials)} registered user(s) from {CONFIG['CREDENTIALS_FILE']}")
     
     app = create_app()
     web.run_app(
