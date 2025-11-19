@@ -286,9 +286,10 @@ def cleanup_expired_items():
         logger.debug(f"Cleanup: removed {len(expired_challenges)} challenges, {len(expired_csrf)} CSRF tokens, {rate_limits_cleaned} rate limit entries")
 
 
-def create_jwt(username: str) -> str:
+def create_jwt(username: str, expiry_hours: Optional[int] = None) -> str:
     """Create JWT token for authenticated session"""
-    expiry = datetime.utcnow() + timedelta(hours=CONFIG['SESSION_EXPIRY_HOURS'])
+    hours = expiry_hours if expiry_hours is not None else CONFIG['SESSION_EXPIRY_HOURS']
+    expiry = datetime.utcnow() + timedelta(hours=hours)
     payload = {
         'username': username,
         'exp': expiry,
@@ -460,6 +461,25 @@ DARK_STYLE = """
         font-size: 13px;
         color: #b0b0b0;
     }
+    .remember-me {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 20px;
+        gap: 8px;
+    }
+    .remember-me input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+        cursor: pointer;
+        accent-color: #4a9eff;
+    }
+    .remember-me label {
+        font-size: 14px;
+        color: #e0e0e0;
+        cursor: pointer;
+        user-select: none;
+    }
 </style>
 """
 
@@ -593,6 +613,10 @@ def login_page(csrf_token_id: str, csrf_token_value: str) -> str:
         <h1>Sign In</h1>
         <p>Authenticate with your passkey</p>
         <div id="error" class="error" style="display:none;"></div>
+        <div class="remember-me">
+            <input type="checkbox" id="remember-me" />
+            <label for="remember-me">Remember me for 24 hours</label>
+        </div>
         <button onclick="authenticate()">Sign in with Passkey</button>
         <a href="/pregister" class="link">Register New User</a>
         <div id="status" class="status"></div>
@@ -634,6 +658,7 @@ def login_page(csrf_token_id: str, csrf_token_value: str) -> str:
                 document.getElementById('status').textContent = 'Completing authentication...';
                 
                 // Complete authentication
+                const rememberMe = document.getElementById('remember-me').checked;
                 const completeResp = await fetch('/api/login/complete', {{
                     method: 'POST',
                     headers: {{
@@ -653,7 +678,8 @@ def login_page(csrf_token_id: str, csrf_token_value: str) -> str:
                             }},
                             type: credential.type
                         }},
-                        challenge_id: challengeId
+                        challenge_id: challengeId,
+                        remember_me: rememberMe
                     }})
                 }});
 
@@ -1121,6 +1147,7 @@ async def handle_login_complete(request: web.Request) -> web.Response:
         data = await request.json()
         credential = data.get('credential')
         challenge_id = data.get('challenge_id')
+        remember_me = data.get('remember_me', False)
 
         if not credential:
             return web.Response(text='Invalid request', status=400)
@@ -1178,13 +1205,16 @@ async def handle_login_complete(request: web.Request) -> web.Response:
         # Update sign count
         cred_store.update_sign_count(cred_id, verification.new_sign_count)
 
+        # Determine session expiry hours
+        expiry_hours = 24 if remember_me else CONFIG['SESSION_EXPIRY_HOURS']
+
         # Log successful authentication
         client_ip = get_client_ip(request)
         cred_id_short = format_credential_id(stored_cred['id'])
-        logger.info(f"User '{stored_cred['username']}' authenticated from {client_ip} (credential: {cred_id_short})")
+        logger.info(f"User '{stored_cred['username']}' authenticated from {client_ip} (credential: {cred_id_short}, remember_me={remember_me}, {expiry_hours}h session)")
 
         # Create JWT
-        token = create_jwt(stored_cred['username'])
+        token = create_jwt(stored_cred['username'], expiry_hours=expiry_hours)
 
         # Set cookie
         response = web.Response(text='Authentication successful', status=200)
@@ -1194,9 +1224,9 @@ async def handle_login_complete(request: web.Request) -> web.Response:
             httponly=True,
             secure=True,
             samesite='Strict',  # Changed from 'Lax' to 'Strict' for better CSRF protection
-            max_age=CONFIG['SESSION_EXPIRY_HOURS'] * 3600
+            max_age=expiry_hours * 3600
         )
-        
+
         return response
 
     except Exception as e:

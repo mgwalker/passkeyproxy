@@ -11,7 +11,7 @@ Passkey-authenticated HTTP reverse proxy - a single-file Python implementation f
 ## Architecture
 
 ### Single-File Design
-The entire application is contained in `main.py` (~1568 lines). This design choice prioritizes simplicity and ease of deployment for home/hobby use.
+The entire application is contained in `main.py` (~1600 lines). This design choice prioritizes simplicity and ease of deployment for home/hobby use.
 
 ### Core Components
 
@@ -32,6 +32,7 @@ The entire application is contained in `main.py` (~1568 lines). This design choi
    - JWT tokens for session management (stored in HTTP-only, Strict SameSite cookies)
    - Two-step registration: existing users must authenticate before registering new users
    - All state-changing endpoints validate CSRF tokens
+   - **"Remember me" feature**: Login page includes optional checkbox to set 24-hour session duration regardless of config
 
 4. **Middleware Stack** (lines 1328-1356)
    - `setup_redirect_middleware`: Redirects to /psetup if no credentials exist
@@ -51,13 +52,25 @@ The entire application is contained in `main.py` (~1568 lines). This design choi
    - Background cleanup task runs every 30 seconds
    - Maximum 1000 challenges to prevent memory exhaustion
 
+7. **"Remember Me" Feature** (lines 289-298, 616-619, 661-682, 1150, 1208-1230)
+   - Login page (`/plogin`) includes styled checkbox: "Remember me for 24 hours"
+   - When checked: Session duration is set to exactly 24 hours (hardcoded)
+   - When unchecked: Session duration uses `SESSION_EXPIRY_HOURS` from config
+   - Implementation:
+     - `create_jwt()` accepts optional `expiry_hours` parameter (defaults to config value)
+     - Client sends `remember_me: true/false` in `/api/login/complete` request body
+     - Server sets both JWT expiration and cookie `max_age` to match selected duration
+     - Authentication logs include `remember_me` status and session duration for audit purposes
+   - Security: All existing protections remain (CSRF, rate limiting, HTTP-only cookies, SameSite=Strict)
+   - UI: Checkbox styled with dark theme (flexbox layout, blue accent color matching buttons)
+
 ### Configuration
 
 All configuration is loaded from environment variables (lines 44-53):
 - `PROXY_LISTEN_HOST/PORT`: Where the proxy listens
 - `TARGET_HOST/PORT`: Backend application to protect
 - `JWT_SECRET_KEY`: **REQUIRED** - Session token signing key (must be explicitly set, minimum 32 bytes)
-- `SESSION_EXPIRY_HOURS`: How long sessions last
+- `SESSION_EXPIRY_HOURS`: How long sessions last (default: 24). Used when "Remember me" is unchecked; overridden to 24h when checked
 - `RP_NAME`: WebAuthn relying party name
 - `CREDENTIALS_FILE`: Where to store passkey credentials
 - `LOG_LEVEL`: Logging verbosity (default: INFO, options: DEBUG/INFO/WARNING/ERROR)
@@ -78,7 +91,7 @@ Configuration is loaded from `.env` file via `python-dotenv` (line 36-37).
 
 **Pages:**
 - `/psetup` - Initial admin registration (only shown when no credentials exist)
-- `/plogin` - Passkey authentication
+- `/plogin` - Passkey authentication (includes optional "Remember me for 24 hours" checkbox)
 - `/pregister` - New user registration (requires existing user auth first)
 
 **API Endpoints:**
@@ -102,7 +115,7 @@ Configuration is loaded from `.env` file via `python-dotenv` (line 36-37).
 The application includes comprehensive security/audit logging:
 
 **Log Levels:**
-- **INFO** (default): Authentication success/failure, user registration, session issues, credential operations, startup/config
+- **INFO** (default): Authentication success/failure (includes `remember_me` status and session duration), user registration, session issues, credential operations, startup/config
 - **WARNING**: CSRF failures, rate limits, challenge validation errors, sign count anomalies, memory limit enforcement
 - **DEBUG**: Proxy requests, WebSocket lifecycle, cleanup operations (verbose)
 - **ERROR**: Exceptions and critical errors
@@ -140,7 +153,7 @@ The project requires Python >=3.11 (specified in pyproject.toml).
 
 ## Important Notes
 
-- **Single-file architecture**: All code is in `main.py` (~1568 lines with logging) - do not split into modules unless explicitly requested
+- **Single-file architecture**: All code is in `main.py` (~1600 lines) - do not split into modules unless explicitly requested
 - **Security credentials**: `credentials.json` and `.env` contain secrets and should never be committed
 - **In-memory state**: Challenges, CSRF tokens, and rate limits stored in-memory - lost on restart (acceptable for this use case)
 - **No database**: Uses JSON file storage for simplicity

@@ -36,7 +36,7 @@ This guide explains how to run the Passkey Proxy using Docker.
    ```
 
    The proxy logs security/audit events by default at INFO level, including:
-   - Authentication success/failure with user and IP
+   - Authentication success/failure with user, IP, remember_me status, and session duration
    - Registration events
    - Security warnings (rate limits, CSRF failures, sign count anomalies)
 
@@ -79,7 +79,7 @@ docker run -d \
 | `TARGET_HOST` | Backend application hostname | `localhost` |
 | `TARGET_PORT` | Backend application port | `3000` |
 | `JWT_SECRET_KEY` | Secret key for JWT signing | Auto-generated |
-| `SESSION_EXPIRY_HOURS` | Session duration in hours | `24` |
+| `SESSION_EXPIRY_HOURS` | Session duration in hours (used when "Remember me" is unchecked) | `24` |
 | `RP_NAME` | WebAuthn relying party name | `Passkey Proxy` |
 | `CREDENTIALS_FILE` | Path to credentials storage | `/app/data/credentials.json` |
 | `LOG_LEVEL` | Logging verbosity | `INFO` (options: `DEBUG`, `INFO`, `WARNING`, `ERROR`) |

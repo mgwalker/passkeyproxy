@@ -9,7 +9,7 @@ A lightweight, passkey-authenticated HTTP reverse proxy for securing home and ho
 - 🔒 **Zero Trust** - No access without valid authentication
 - 🌐 **Universal Proxy** - Works with any HTTP backend application
 - 📱 **Multi-Device Support** - Use hardware keys, phones, or platform authenticators
-- ⏰ **Session Management** - Configurable JWT-based sessions
+- ⏰ **Session Management** - Configurable JWT-based sessions with optional "Remember me" feature
 - 👥 **Multi-User** - Support for multiple authenticated users
 - 📊 **Streaming Support** - Handles large responses and streaming content
 - 🌙 **Dark Mode UI** - Clean, modern authentication interface
@@ -102,6 +102,7 @@ python main.py
 6. **Login and access your application**
 
 - Visit `http://your-proxy-address:8080/plogin`
+- Optionally check "Remember me for 24 hours" for extended session on trusted devices
 - Authenticate with your passkey
 - You'll be proxied to your protected application
 
@@ -115,7 +116,7 @@ All configuration is done via environment variables (or `.env` file):
 | `TARGET_PORT` | `3000` | Backend application port |
 | `PROXY_LISTEN_HOST` | `0.0.0.0` | Address for proxy to listen on |
 | `PROXY_LISTEN_PORT` | `8080` | Port for proxy to listen on |
-| `SESSION_EXPIRY_HOURS` | `24` | How long sessions remain valid |
+| `SESSION_EXPIRY_HOURS` | `24` | How long sessions remain valid (used when "Remember me" is unchecked; overridden to 24h when checked) |
 | `JWT_SECRET_KEY` | **Required** | Secret key for signing session tokens (min 32 bytes) |
 | `RP_NAME` | `Passkey Proxy` | Display name shown during authentication |
 | `CREDENTIALS_FILE` | `./credentials.json` | Where to store passkey credentials |
@@ -310,7 +311,7 @@ docker run -d \
 The proxy includes comprehensive security/audit logging at the INFO level:
 
 **Authentication Events:**
-- User login success/failure (with username, IP, credential ID)
+- User login success/failure (with username, IP, credential ID, remember_me status, session duration)
 - User registration (initial admin and subsequent users)
 - Session validation failures
 
@@ -331,7 +332,7 @@ The proxy includes comprehensive security/audit logging at the INFO level:
 
 **Log Format:**
 ```
-2025-01-15 10:23:45 - INFO - User 'alice' authenticated from 192.168.1.100 (credential: w7k9mPqR)
+2025-01-15 10:23:45 - INFO - User 'alice' authenticated from 192.168.1.100 (credential: w7k9mPqR, remember_me=True, 24h session)
 2025-01-15 10:24:12 - WARNING - Rate limit exceeded from 192.168.1.50 for /api/login/begin (retry after 45s)
 ```
 
@@ -349,7 +350,19 @@ Your backend application can use these for user identification and logging.
 
 ### Session Management
 
-Sessions are valid for `SESSION_EXPIRY_HOURS`. After expiry, users must re-authenticate. To invalidate a session:
+Sessions are valid for `SESSION_EXPIRY_HOURS` (default 24 hours). After expiry, users must re-authenticate.
+
+**"Remember Me" Feature:**
+
+The login page includes an optional "Remember me for 24 hours" checkbox:
+
+- **When checked**: Session lasts exactly 24 hours, regardless of `SESSION_EXPIRY_HOURS` config
+- **When unchecked**: Session lasts for the configured `SESSION_EXPIRY_HOURS` value
+- **Use case**: Enable on trusted/personal devices to reduce login frequency
+- **Security**: All existing protections remain (HTTP-only cookies, SameSite=Strict, etc.)
+- **Logging**: Authentication logs include `remember_me` status and session duration for audit purposes
+
+To invalidate a session manually:
 
 - Delete the `session` cookie (client-side)
 - User will be redirected to login on next request
