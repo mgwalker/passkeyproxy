@@ -1,28 +1,17 @@
 # Dockerfile for Passkey-authenticated HTTP Reverse Proxy
 FROM python:3.11-slim
 
-# Install uv for faster dependency management
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-
 # Set working directory
 WORKDIR /app
 
-# Create non-root user for security
-RUN useradd -m -u 1000 -s /bin/bash proxyuser && \
-    mkdir -p /app/data && \
-    chown -R proxyuser:proxyuser /app
-
 # Copy dependency files
-COPY --chown=proxyuser:proxyuser pyproject.toml ./
+COPY pyproject.toml ./
 
-# Install dependencies using uv
-RUN uv pip install --system --no-cache -r pyproject.toml
+# Install dependencies using pip
+RUN pip install --no-cache .
 
 # Copy application code
-COPY --chown=proxyuser:proxyuser main.py ./
-
-# Switch to non-root user
-USER proxyuser
+COPY main.py ./
 
 # Create volume mount point for persistent data
 VOLUME ["/app/data"]
@@ -36,7 +25,7 @@ ENV PROXY_LISTEN_HOST=0.0.0.0 \
     CREDENTIALS_FILE=/app/data/credentials.json
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=600s --timeout=5s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/login').read()" || exit 1
 
 # Run the application
