@@ -132,8 +132,8 @@ def main():
         f"Passkey Proxy starting on {CONFIG['PROXY_LISTEN_HOST']}:{CONFIG['PROXY_LISTEN_PORT']}, proxying to :"  # noqa: E501
     )
 
-    for target in CONFIG["TARGET_HOST"]:
-        logger.info(f"  - {target['HOST']} -> {target['TARGET']}")
+    for host, target in CONFIG["TARGET_HOST"].items():
+        logger.info(f"  - {host} -> {target['TARGET']}")
 
     logger.info(f"Session expiry: {CONFIG['SESSION_EXPIRY_HOURS']} hours")
 

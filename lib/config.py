@@ -6,6 +6,7 @@ Single-file implementation for home/hobby use
 
 import os
 import tomllib
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -27,7 +28,7 @@ _ENV_CONFIG = {
 
 _TOML_CONFIG = {}
 if _ENV_CONFIG["CONFIG_FILE"]:
-    with open(os.path.join(os.getcwd(), _ENV_CONFIG["CONFIG_FILE"]), "rb") as toml:
+    with open(Path(_ENV_CONFIG["CONFIG_FILE"]), "rb") as toml:
         _TOML_CONFIG = tomllib.load(toml)
 
 CONFIG = {**_ENV_CONFIG, **_TOML_CONFIG}
@@ -40,7 +41,7 @@ if isinstance(CONFIG.get("TARGET_HOST"), str):
 CONFIG["TARGET_HOST"] = {
     target.get("HOST", "*").lower(): {
         "TARGET": target["TARGET"],
-        "AUTH_REQUIRED": target["AUTH_REQUIRED"],
+        "AUTH_REQUIRED": target.get("AUTH_REQUIRED", True),
     }
     for target in CONFIG["TARGET_HOST"]
 }

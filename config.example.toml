@@ -1,0 +1,16 @@
+# Any configuration in the environment is also applicable to the
+# TOML. Values here override those set in the environment.
+JWT_SECRET_KEY = "super secret secret"
+
+# Multiple target hosts can be configured in the TOML by creating
+# a list of targets.
+TARGET_HOST = [
+  { HOST = "music.example", TARGET = "localhost:8080", AUTH_REQUIRED = false },
+
+  # AUTH_REQUIRED defaults to True if not set
+  { HOST = "pictures.examle", TARGET = "localhost:8000" },
+
+  # If the HOST value is missing or *, it will be used as the catch-all
+  # and will match all requests for hosts that are not configured.
+  { HOST = "*", TARGET = "farfart:3000" },
+]
