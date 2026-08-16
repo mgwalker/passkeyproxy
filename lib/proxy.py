@@ -31,7 +31,7 @@ async def handle_websocket_proxy(request: web.Request) -> web.WebSocketResponse:
 
     # Prepare headers for backend connection
     headers = {
-        "X-Forwarded-User": username,
+        target["AUTH_HEADER"]: username,
         "X-Forwarded-For": request.remote or "unknown",
         "X-Forwarded-Proto": request.headers.get("X-Forwarded-Proto", "http"),
     }
@@ -148,7 +148,7 @@ async def handle_proxy(request: web.Request) -> web.Response:
 
         # Prepare headers
         headers = dict(request.headers)
-        headers["X-Forwarded-User"] = username
+        headers[target["AUTH_HEADER"]] = username
         headers["X-Forwarded-For"] = request.remote
         headers["X-Forwarded-Proto"] = request.headers.get("X-Forwarded-Proto", "http")
 

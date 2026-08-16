@@ -40,8 +40,10 @@ if isinstance(CONFIG.get("TARGET_HOST"), str):
 
 CONFIG["TARGET_HOST"] = {
     target.get("HOST", "*").lower(): {
-        "TARGET": target["TARGET"],
-        "AUTH_REQUIRED": target.get("AUTH_REQUIRED", True),
+        "HOST": "*",
+        "AUTH_REQUIRED": True,
+        "AUTH_HEADER": "X-Forwarded-User",
+        **target,
     }
     for target in CONFIG["TARGET_HOST"]
 }
