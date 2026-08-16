@@ -1,6 +1,6 @@
 [project]
 name = "passkeyproxy"
-version = "0.1.1"
+version = "0.2.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -9,4 +9,22 @@ dependencies = [
     "pyjwt>=2.10.1",
     "python-dotenv>=1.1.1",
     "webauthn>=2.7.0",
+]
+
+[dependency-groups]
+dev = ["isort>=8.0.1", "ruff>=0.16.3"]
+
+[tool.ruff.lint]
+select = [ # pycodestyle
+    "E",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # flake8-simplify
+    "SIM",
+    # isort
+    "I",
 ]

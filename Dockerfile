@@ -11,7 +11,8 @@ COPY pyproject.toml ./
 RUN pip install --no-cache .
 
 # Copy application code
-COPY main.py ./
+COPY --link lib ./lib
+COPY --link main.py ./
 
 # Create volume mount point for persistent data
 VOLUME ["/app/data"]
