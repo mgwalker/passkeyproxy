@@ -551,7 +551,7 @@ def setup_page(csrf_token_id: str, csrf_token_value: str) -> str:
             
             try {{
                 // Begin registration
-                const beginResp = await fetch('/api/register/begin', {{
+                const beginResp = await fetch('/ppauth/api/register/begin', {{
                     method: 'POST',
                     headers: {{
                         'Content-Type': 'application/json',
@@ -585,7 +585,7 @@ def setup_page(csrf_token_id: str, csrf_token_value: str) -> str:
                 document.getElementById('status').textContent = 'Completing registration...';
                 
                 // Complete registration
-                const completeResp = await fetch('/api/register/complete', {{
+                const completeResp = await fetch('/ppauth/api/register/complete', {{
                     method: 'POST',
                     headers: {{
                         'Content-Type': 'application/json',
@@ -613,7 +613,7 @@ def setup_page(csrf_token_id: str, csrf_token_value: str) -> str:
                 }}
 
                 document.getElementById('status').textContent = 'Success! Redirecting...';
-                setTimeout(() => window.location.href = '/plogin', 1000);
+                setTimeout(() => window.location.href = '/ppauth/login', 1000);
                 
             }} catch (error) {{
                 showError(error.message);
@@ -653,7 +653,7 @@ def login_page(csrf_token_id: str, csrf_token_value: str) -> str:
             <label for="remember-me">Remember me for 24 hours</label>
         </div>
         <button onclick="authenticate()">Sign in with Passkey</button>
-        <a href="/pregister" class="link">Register New User</a>
+        <a href="/ppauth/register" class="link">Register New User</a>
         <div id="status" class="status"></div>
     </div>
     <script>
@@ -662,7 +662,7 @@ def login_page(csrf_token_id: str, csrf_token_value: str) -> str:
             
             try {{
                 // Begin authentication
-                const beginResp = await fetch('/api/login/begin', {{
+                const beginResp = await fetch('/ppauth/api/login/begin', {{
                     method: 'POST',
                     headers: {{
                         'X-CSRF-Token-ID': '{csrf_token_id}',
@@ -694,7 +694,7 @@ def login_page(csrf_token_id: str, csrf_token_value: str) -> str:
                 
                 // Complete authentication
                 const rememberMe = document.getElementById('remember-me').checked;
-                const completeResp = await fetch('/api/login/complete', {{
+                const completeResp = await fetch('/ppauth/api/login/complete', {{
                     method: 'POST',
                     headers: {{
                         'Content-Type': 'application/json',
@@ -760,7 +760,7 @@ def register_page(csrf_token_id: str, csrf_token_value: str) -> str:
             <p>First, authenticate with your existing passkey</p>
             <div id="error" class="error" style="display:none;"></div>
             <button onclick="authenticateForRegistration()">Authenticate</button>
-            <a href="/plogin" class="link">Back to Login</a>
+            <a href="/ppauth/login" class="link">Back to Login</a>
             <div id="status" class="status"></div>
         </div>
         
@@ -778,7 +778,7 @@ def register_page(csrf_token_id: str, csrf_token_value: str) -> str:
             document.getElementById('status').textContent = 'Starting authentication...';
             
             try {{
-                const beginResp = await fetch('/api/register-auth/begin', {{
+                const beginResp = await fetch('/ppauth/api/register-auth/begin', {{
                     method: 'POST',
                     headers: {{
                         'X-CSRF-Token-ID': '{csrf_token_id}',
@@ -807,7 +807,7 @@ def register_page(csrf_token_id: str, csrf_token_value: str) -> str:
                 
                 document.getElementById('status').textContent = 'Verifying...';
                 
-                const completeResp = await fetch('/api/register-auth/complete', {{
+                const completeResp = await fetch('/ppauth/api/register-auth/complete', {{
                     method: 'POST',
                     headers: {{
                         'Content-Type': 'application/json',
@@ -853,7 +853,7 @@ def register_page(csrf_token_id: str, csrf_token_value: str) -> str:
             document.getElementById('status2').textContent = 'Starting registration...';
             
             try {{
-                const beginResp = await fetch('/api/register/begin', {{
+                const beginResp = await fetch('/ppauth/api/register/begin', {{
                     method: 'POST',
                     headers: {{
                         'Content-Type': 'application/json',
@@ -884,7 +884,7 @@ def register_page(csrf_token_id: str, csrf_token_value: str) -> str:
                 
                 document.getElementById('status2').textContent = 'Completing registration...';
                 
-                const completeResp = await fetch('/api/register/complete', {{
+                const completeResp = await fetch('/ppauth/api/register/complete', {{
                     method: 'POST',
                     headers: {{
                         'Content-Type': 'application/json',
@@ -911,7 +911,7 @@ def register_page(csrf_token_id: str, csrf_token_value: str) -> str:
                 }}
 
                 document.getElementById('status2').textContent = 'Success! Redirecting...';
-                setTimeout(() => window.location.href = '/plogin', 1000);
+                setTimeout(() => window.location.href = '/ppauth/login', 1000);
                 
             }} catch (error) {{
                 showError2(error.message);
@@ -943,7 +943,7 @@ def register_page(csrf_token_id: str, csrf_token_value: str) -> str:
 async def handle_setup(request: web.Request) -> web.Response:
     """Show setup page if no credentials exist"""
     if not cred_store.is_empty():
-        return web.HTTPFound("/plogin")
+        return web.HTTPFound("/ppauth/login")
     csrf_token_id, csrf_token_value = generate_csrf_token()
     return web.Response(
         text=setup_page(csrf_token_id, csrf_token_value), content_type="text/html"
@@ -963,7 +963,7 @@ async def handle_login(request: web.Request) -> web.Response:
 async def handle_register_page(request: web.Request) -> web.Response:
     """Show registration page"""
     if cred_store.is_empty():
-        return web.HTTPFound("/psetup")
+        return web.HTTPFound("/ppauth/setup")
     csrf_token_id, csrf_token_value = generate_csrf_token()
     return web.Response(
         text=register_page(csrf_token_id, csrf_token_value), content_type="text/html"
@@ -985,7 +985,7 @@ async def handle_register_begin(request: web.Request) -> web.Response:
                 else "invalid/expired"
             )
             logger.warning(
-                f"CSRF token validation failed from {client_ip} for /api/register/begin (reason: {reason})"
+                f"CSRF token validation failed from {client_ip} for /ppauth/api/register/begin (reason: {reason})"
             )
             return web.Response(text="Invalid or expired CSRF token", status=403)
 
@@ -1050,7 +1050,7 @@ async def handle_register_complete(request: web.Request) -> web.Response:
                 else "invalid/expired"
             )
             logger.warning(
-                f"CSRF token validation failed from {client_ip} for /api/register/complete (reason: {reason})"
+                f"CSRF token validation failed from {client_ip} for /ppauth/api/register/complete (reason: {reason})"
             )
             return web.Response(text="Invalid or expired CSRF token", status=403)
 
@@ -1162,7 +1162,7 @@ async def handle_login_begin(request: web.Request) -> web.Response:
                 else "invalid/expired"
             )
             logger.warning(
-                f"CSRF token validation failed from {client_ip} for /api/login/begin (reason: {reason})"
+                f"CSRF token validation failed from {client_ip} for /ppauth/api/login/begin (reason: {reason})"
             )
             return web.Response(text="Invalid or expired CSRF token", status=403)
 
@@ -1223,7 +1223,7 @@ async def handle_login_complete(request: web.Request) -> web.Response:
                 else "invalid/expired"
             )
             logger.warning(
-                f"CSRF token validation failed from {client_ip} for /api/login/complete (reason: {reason})"
+                f"CSRF token validation failed from {client_ip} for /ppauth/api/login/complete (reason: {reason})"
             )
             return web.Response(text="Invalid or expired CSRF token", status=403)
 
@@ -1346,7 +1346,7 @@ async def handle_register_auth_complete(request: web.Request) -> web.Response:
                 else "invalid/expired"
             )
             logger.warning(
-                f"CSRF token validation failed from {client_ip} for /api/register-auth/complete (reason: {reason})"
+                f"CSRF token validation failed from {client_ip} for /ppauth/api/register-auth/complete (reason: {reason})"
             )
             return web.Response(text="Invalid or expired CSRF token", status=403)
 
@@ -1625,7 +1625,7 @@ async def handle_proxy(request: web.Request) -> web.Response:
 async def auth_middleware(request: web.Request, handler):
     """Authentication middleware"""
     # Skip auth for setup and API endpoints
-    if request.path in ["/psetup", "/plogin", "/pregister"] or request.path.startswith(
+    if request.path in ["/ppauth/setup", "/ppauth/login", "/ppauth/register"] or request.path.startswith(
         "/api/"
     ):
         return await handler(request)
@@ -1638,7 +1638,7 @@ async def auth_middleware(request: web.Request, handler):
         logger.warning(
             f"Missing session token from {client_ip} attempting {request.path}"
         )
-        return web.HTTPFound("/plogin")
+        return web.HTTPFound("/ppauth/login")
 
     payload = verify_jwt(token)
     if not payload:
@@ -1647,7 +1647,7 @@ async def auth_middleware(request: web.Request, handler):
         logger.warning(
             f"Invalid/expired session token from {client_ip} attempting {request.path}"
         )
-        response = web.HTTPFound("/plogin")
+        response = web.HTTPFound("/ppauth/login")
         response.del_cookie("session")
         return response
 
@@ -1661,11 +1661,11 @@ async def auth_middleware(request: web.Request, handler):
 async def setup_redirect_middleware(request: web.Request, handler):
     """Redirect to setup if no credentials exist"""
     if cred_store.is_empty() and request.path not in [
-        "/psetup",
-        "/api/register/begin",
-        "/api/register/complete",
+        "/ppauth/setup",
+        "/ppauth/api/register/begin",
+        "/ppauth/api/register/complete",
     ]:
-        return web.HTTPFound("/psetup")
+        return web.HTTPFound("/ppauth/setup")
 
     return await handler(request)
 
@@ -1703,17 +1703,17 @@ def create_app() -> web.Application:
     app.cleanup_ctx.append(cleanup_background_task)
 
     # Add routes
-    app.router.add_get("/psetup", handle_setup)
-    app.router.add_get("/plogin", handle_login)
-    app.router.add_get("/pregister", handle_register_page)
+    app.router.add_get("/ppauth/setup", handle_setup)
+    app.router.add_get("/ppauth/login", handle_login)
+    app.router.add_get("/ppauth/register", handle_register_page)
 
     # API routes
-    app.router.add_post("/api/register/begin", handle_register_begin)
-    app.router.add_post("/api/register/complete", handle_register_complete)
-    app.router.add_post("/api/login/begin", handle_login_begin)
-    app.router.add_post("/api/login/complete", handle_login_complete)
-    app.router.add_post("/api/register-auth/begin", handle_register_auth_begin)
-    app.router.add_post("/api/register-auth/complete", handle_register_auth_complete)
+    app.router.add_post("/ppauth/api/register/begin", handle_register_begin)
+    app.router.add_post("/ppauth/api/register/complete", handle_register_complete)
+    app.router.add_post("/ppauth/api/login/begin", handle_login_begin)
+    app.router.add_post("/ppauth/api/login/complete", handle_login_complete)
+    app.router.add_post("/ppauth/api/register-auth/begin", handle_register_auth_begin)
+    app.router.add_post("/ppauth/api/register-auth/complete", handle_register_auth_complete)
 
     # Proxy all other requests
     app.router.add_route("*", "/{path:.*}", handle_proxy)
@@ -1750,7 +1750,7 @@ def main():
     logger.info(f"Session expiry: {CONFIG['SESSION_EXPIRY_HOURS']} hours")
 
     if cred_store.is_empty():
-        logger.info("No credentials found, first-time setup required at /psetup")
+        logger.info("No credentials found, first-time setup required at /ppauth/setup")
     else:
         logger.info(
             f"Loaded {len(cred_store.credentials)} registered user(s) from {CONFIG['CREDENTIALS_FILE']}"
