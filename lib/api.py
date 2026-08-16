@@ -194,6 +194,7 @@ async def handle_register_complete(request: web.Request) -> web.Response:
             public_key=verification.credential_public_key,
             username=username,
             sign_count=verification.sign_count,
+            host=origin,
             credential_data=credential,
         )
 
@@ -240,13 +241,16 @@ async def handle_login_begin(request: web.Request) -> web.Response:
             )
             return web.Response(text="Invalid or expired CSRF token", status=403)
 
-        if cred_store.is_empty():
+        origin = get_origin(request)
+
+        # Get all credentials
+        credentials = cred_store.get_all_credentials_for_host(host=origin)
+
+        if len(credentials) == 0:
             return web.Response(text="No credentials registered", status=400)
 
         rp_id = get_rp_id(request)
 
-        # Get all credentials
-        credentials = cred_store.get_all_credentials()
         allow_credentials = [
             PublicKeyCredentialDescriptor(id=base64url_to_bytes(cred["id"]))
             for cred in credentials
@@ -384,7 +388,7 @@ async def handle_login_complete(request: web.Request) -> web.Response:
         # Set cookie
         response = web.Response(text="Authentication successful", status=200)
         response.set_cookie(
-            "session",
+            CONFIG["SESSION_COOKIE_NAME"],
             token,
             httponly=True,
             secure=True,

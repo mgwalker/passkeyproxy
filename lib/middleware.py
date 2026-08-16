@@ -1,8 +1,9 @@
 from aiohttp import web
 
+from lib.config import CONFIG
 from lib.credential_store import cred_store
 from lib.logger import logger
-from lib.util import get_client_ip, verify_jwt
+from lib.util import get_client_ip, get_origin, get_target_host, verify_jwt
 
 
 @web.middleware
@@ -17,9 +18,12 @@ async def auth_middleware(request: web.Request, handler):
         return await handler(request)
 
     # Check for valid JWT
-    token = request.cookies.get("session")
+    token = request.cookies.get(CONFIG["SESSION_COOKIE_NAME"])
 
-    if not token:
+    target = get_target_host(request)
+    auth_required = not target or target.get("AUTH_REQUIRED", True)
+
+    if not token and auth_required:
         client_ip = get_client_ip(request)
         logger.warning(
             f"Missing session token from {client_ip} attempting {request.path}"
@@ -27,18 +31,19 @@ async def auth_middleware(request: web.Request, handler):
         return web.HTTPFound("/ppauth/login")
 
     payload = verify_jwt(token)
-    if not payload:
+    if not payload and auth_required:
         # Clear invalid cookie
         client_ip = get_client_ip(request)
         logger.warning(
             f"Invalid/expired session token from {client_ip} attempting {request.path}"
         )
         response = web.HTTPFound("/ppauth/login")
-        response.del_cookie("session")
+        response.del_cookie(CONFIG["SESSION_COOKIE_NAME"])
         return response
 
     # Store username in request
-    request["authenticated_user"] = payload["username"]
+    if payload:
+        request["authenticated_user"] = payload["username"]
 
     return await handler(request)
 
@@ -46,7 +51,8 @@ async def auth_middleware(request: web.Request, handler):
 @web.middleware
 async def setup_redirect_middleware(request: web.Request, handler):
     """Redirect to setup if no credentials exist"""
-    if cred_store.is_empty() and request.path not in [
+    origin = get_origin(request)
+    if cred_store.is_empty_for_host(host=origin) and request.path not in [
         "/ppauth/setup",
         "/ppauth/api/register/begin",
         "/ppauth/api/register/complete",

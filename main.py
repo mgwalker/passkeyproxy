@@ -25,6 +25,7 @@ from lib.csrf_tokens import (
 from lib.logger import logger
 from lib.proxy import handle_proxy
 from lib.rate_limit import rate_limit
+from lib.util import get_origin
 
 # Security constants
 CLEANUP_INTERVAL_SECONDS = 30  # Run cleanup every 30 seconds
@@ -40,7 +41,8 @@ RATE_LIMIT_WINDOW_SECONDS = 60  # 1 minute window
 @rate_limit(RATE_LIMIT_PAGE_ENDPOINTS)
 async def handle_setup(request: web.Request) -> web.Response:
     """Show setup page if no credentials exist"""
-    if not cred_store.is_empty():
+    origin = get_origin(request)
+    if not cred_store.is_empty_for_host(host=origin):
         return web.HTTPFound("/ppauth/login")
     csrf_token_id, csrf_token_value = generate_csrf_token()
     return web.Response(
@@ -60,7 +62,8 @@ async def handle_login(request: web.Request) -> web.Response:
 @rate_limit(RATE_LIMIT_PAGE_ENDPOINTS)
 async def handle_register_page(request: web.Request) -> web.Response:
     """Show registration page"""
-    if cred_store.is_empty():
+    origin = get_origin(request)
+    if cred_store.is_empty_for_host(host=origin):
         return web.HTTPFound("/ppauth/setup")
     csrf_token_id, csrf_token_value = generate_csrf_token()
     return web.Response(
@@ -124,23 +127,22 @@ def main():
         )
 
     # Validate required config
-    if (not CONFIG["TARGET_HOST"] or not CONFIG["TARGET_PORT"]) and not CONFIG[
-        "TARGET_HOSTS"
-    ]:
-        logger.error("TARGET_HOST and TARGET_PORT must be set")
+    if not CONFIG["TARGET_HOST"]:
+        logger.error("TARGET_HOST must be set")
         return
 
     logger.info(
-        f"Passkey Proxy starting on {CONFIG['PROXY_LISTEN_HOST']}:{CONFIG['PROXY_LISTEN_PORT']}, proxying to {CONFIG['TARGET_HOST']}:{CONFIG['TARGET_PORT']}"  # noqa: E501
+        f"Passkey Proxy starting on {CONFIG['PROXY_LISTEN_HOST']}:{CONFIG['PROXY_LISTEN_PORT']}, proxying to :"  # noqa: E501
     )
+
+    for host, target in CONFIG["TARGET_HOST"].items():
+        logger.info(f"  - {host} -> {target['TARGET']}")
+
     logger.info(f"Session expiry: {CONFIG['SESSION_EXPIRY_HOURS']} hours")
 
-    if cred_store.is_empty():
-        logger.info("No credentials found, first-time setup required at /ppauth/setup")
-    else:
-        logger.info(
-            f"Loaded {len(cred_store.credentials)} registered user(s) from {CONFIG['CREDENTIALS_FILE']}"  # noqa: E501
-        )
+    logger.info(
+        f"Loaded {len(cred_store.credentials)} registered user(s) from {CONFIG['CREDENTIALS_FILE']}"  # noqa: E501
+    )
 
     app = create_app()
     web.run_app(

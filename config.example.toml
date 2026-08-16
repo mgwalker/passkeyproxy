@@ -1,0 +1,25 @@
+# Any configuration in the environment is also applicable to the
+# TOML. Values here override those set in the environment.
+JWT_SECRET_KEY = "super secret secret"
+
+# The TOML configuration allows defining multiple hosts that
+# can sit behind the proxy. Each [[TARGET_HOST]] entry is
+# a single supported host.
+[[TARGET_HOST]]
+HOST = "music.example"
+TARGET = "localhost:8080"
+AUTH_REQUIRED = false
+AUTH_HEADER = "X-Auth-User"
+
+# AUTH_REQUIRED defaults to True if not defined.
+# AUTH_HEADER defaults to X-Forwarded-User if not defined.
+[[TARGET_HOST]]
+HOST = "pictures.example"
+TARGET = "localhost:9090"
+
+# If HOST is missing, this host will be used as the catch-all
+# for any requests where the host is not otherwise configured.
+# The catch-all can also be declared explicitly by setting
+# HOST="*"
+[[TARGET_HOST]]
+TARGET = "localhost:7070"

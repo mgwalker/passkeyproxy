@@ -1,3 +1,4 @@
+import urllib
 from datetime import datetime, timedelta
 
 import jwt
@@ -51,3 +52,14 @@ def verify_jwt(token: str) -> dict | None:
         return None
     except jwt.InvalidTokenError:
         return None
+
+
+def get_target_host(request: web.Request) -> str:
+    origin = urllib.parse.urlsplit(get_origin(request)).hostname
+
+    match = CONFIG["TARGET_HOST"].get(origin.lower())
+    if match:
+        return match
+
+    # There's no match, so use the catchall, if present
+    return CONFIG["TARGET_HOST"].get("*")

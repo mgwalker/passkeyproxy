@@ -1,12 +1,10 @@
 import asyncio
 import time
-import urllib
 
 from aiohttp import ClientSession, ClientTimeout, web
 
-from lib.config import CONFIG
 from lib.logger import logger
-from lib.util import get_client_ip, get_origin
+from lib.util import get_client_ip, get_origin, get_target_host
 
 
 async def handle_websocket_proxy(request: web.Request) -> web.WebSocketResponse:
@@ -23,20 +21,17 @@ async def handle_websocket_proxy(request: web.Request) -> web.WebSocketResponse:
     client_ws = web.WebSocketResponse()
     await client_ws.prepare(request)
 
-    target = ""
-    origin = urllib.parse.urlsplit(get_origin(request)).hostname
-
-    if CONFIG["TARGET_HOST"]:
-        target = f"{CONFIG['TARGET_HOST']}:{CONFIG['TARGET_PORT']}"
-    elif CONFIG["TARGET_HOSTS"].get(origin, None):
-        target = f"{CONFIG['TARGET_HOSTS'][origin]}"
+    target = get_target_host(request)
+    if not target:
+        logger.error(f"No target found for host {get_origin(request)}")
+        return web.Response(text="Bad Gateway", status=502)
 
     # Build target WebSocket URL
-    target_ws_url = f"ws://{target}{request.path_qs}"
+    target_ws_url = f"ws://{target['TARGET']}{request.path_qs}"
 
     # Prepare headers for backend connection
     headers = {
-        "X-Forwarded-User": username,
+        target["AUTH_HEADER"]: username,
         "X-Forwarded-For": request.remote or "unknown",
         "X-Forwarded-Proto": request.headers.get("X-Forwarded-Proto", "http"),
     }
@@ -134,16 +129,13 @@ async def handle_proxy(request: web.Request) -> web.Response:
         ):
             return await handle_websocket_proxy(request)
 
-        target = ""
-        origin = urllib.parse.urlsplit(get_origin(request)).hostname
-
-        if CONFIG["TARGET_HOST"]:
-            target = f"{CONFIG['TARGET_HOST']}:{CONFIG['TARGET_PORT']}"
-        elif CONFIG["TARGET_HOSTS"].get(origin, None):
-            target = f"{CONFIG['TARGET_HOSTS'][origin]}"
+        target = get_target_host(request)
+        if not target:
+            logger.error(f"No target found for host {get_origin(request)}")
+            return web.Response(text="Bad Gateway", status=502)
 
         # Build target URL
-        target_url = f"http://{target}{request.path_qs}"
+        target_url = f"http://{target['TARGET']}{request.path_qs}"
 
         # Get authenticated username
         username = request.get("authenticated_user", "unknown")
@@ -156,7 +148,7 @@ async def handle_proxy(request: web.Request) -> web.Response:
 
         # Prepare headers
         headers = dict(request.headers)
-        headers["X-Forwarded-User"] = username
+        headers[target["AUTH_HEADER"]] = username
         headers["X-Forwarded-For"] = request.remote
         headers["X-Forwarded-Proto"] = request.headers.get("X-Forwarded-Proto", "http")
 

@@ -41,16 +41,13 @@ class _CredentialStore:
         except Exception as e:
             logger.error(f"Failed to save credentials: {e}")
 
-    def is_empty(self) -> bool:
-        """Check if there are no credentials"""
-        return len(self.credentials) == 0
-
     def add_credential(
         self,
         credential_id: bytes,
         public_key: bytes,
         username: str,
         sign_count: int,
+        host: str,
         credential_data: dict,
     ):
         """Add a new credential"""
@@ -61,6 +58,7 @@ class _CredentialStore:
                 "public_key": bytes_to_base64url(public_key),
                 "sign_count": sign_count,
                 "username": username,
+                "host": host,
                 "credential_data": credential_data,
                 "created_at": datetime.utcnow().isoformat(),
             }
@@ -69,9 +67,12 @@ class _CredentialStore:
         cred = format_credential_id(cred_id_b64)
         logger.info(f"Credential stored for user '{username}' (credential: {cred})")
 
-    def get_all_credentials(self) -> list[dict]:
+    def get_all_credentials_for_host(self, host: str) -> list[dict]:
         """Get all credentials for authentication"""
-        return self.credentials
+        return [cred for cred in self.credentials if cred.get("host") == host]
+
+    def is_empty_for_host(self, host: str) -> bool:
+        return len(self.get_all_credentials_for_host(host=host)) == 0
 
     def get_credential_by_id(self, credential_id: bytes) -> dict | None:
         """Find credential by ID"""
