@@ -124,15 +124,17 @@ def main():
         )
 
     # Validate required config
-    if (not CONFIG["TARGET_HOST"] or not CONFIG["TARGET_PORT"]) and not CONFIG[
-        "TARGET_HOSTS"
-    ]:
-        logger.error("TARGET_HOST and TARGET_PORT must be set")
+    if not CONFIG["TARGET_HOST"]:
+        logger.error("TARGET_HOST must be set")
         return
 
     logger.info(
-        f"Passkey Proxy starting on {CONFIG['PROXY_LISTEN_HOST']}:{CONFIG['PROXY_LISTEN_PORT']}, proxying to {CONFIG['TARGET_HOST']}:{CONFIG['TARGET_PORT']}"  # noqa: E501
+        f"Passkey Proxy starting on {CONFIG['PROXY_LISTEN_HOST']}:{CONFIG['PROXY_LISTEN_PORT']}, proxying to :"  # noqa: E501
     )
+
+    for target in CONFIG["TARGET_HOST"]:
+        logger.info(f"  - {target['HOST']} -> {target['TARGET']}")
+
     logger.info(f"Session expiry: {CONFIG['SESSION_EXPIRY_HOURS']} hours")
 
     if cred_store.is_empty():
