@@ -1626,7 +1626,7 @@ async def auth_middleware(request: web.Request, handler):
     """Authentication middleware"""
     # Skip auth for setup and API endpoints
     if request.path in ["/ppauth/setup", "/ppauth/login", "/ppauth/register"] or request.path.startswith(
-        "/api/"
+        "/ppauth/api/"
     ):
         return await handler(request)
 
