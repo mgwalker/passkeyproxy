@@ -14,16 +14,17 @@ load_dotenv()
 
 # Load configuration from environment variables
 _ENV_CONFIG = {
-    "PROXY_LISTEN_HOST": os.getenv("PROXY_LISTEN_HOST", "0.0.0.0"),
-    "PROXY_LISTEN_PORT": int(os.getenv("PROXY_LISTEN_PORT", "8080")),
-    "TARGET_HOST": os.getenv("TARGET_HOST", "localhost:3000"),
-    "SESSION_EXPIRY_HOURS": int(os.getenv("SESSION_EXPIRY_HOURS", "24")),
+    "CONFIG_FILE": os.getenv("CONFIG_FILE", None),
+    "CREDENTIALS_FILE": os.getenv("CREDENTIALS_FILE", "./credentials.json"),
     "JWT_SECRET_KEY": os.getenv(
         "JWT_SECRET_KEY"
     ),  # No fallback - must be explicitly set
+    "PROXY_LISTEN_HOST": os.getenv("PROXY_LISTEN_HOST", "0.0.0.0"),
+    "PROXY_LISTEN_PORT": int(os.getenv("PROXY_LISTEN_PORT", "8080")),
     "RP_NAME": os.getenv("RP_NAME", "Passkey Proxy"),
-    "CREDENTIALS_FILE": os.getenv("CREDENTIALS_FILE", "./credentials.json"),
-    "CONFIG_FILE": os.getenv("CONFIG_FILE", None),
+    "SESSION_EXPIRY_HOURS": int(os.getenv("SESSION_EXPIRY_HOURS", "24")),
+    "SESSION_COOKIE_NAME": os.getenv("SESSION_COOKIE_NAME", "ppauth_session"),
+    "TARGET_HOST": os.getenv("TARGET_HOST", "localhost:3000"),
 }
 
 _TOML_CONFIG = {}

@@ -1,5 +1,6 @@
 from aiohttp import web
 
+from lib.config import CONFIG
 from lib.credential_store import cred_store
 from lib.logger import logger
 from lib.util import get_client_ip, get_origin, get_target_host, verify_jwt
@@ -17,7 +18,7 @@ async def auth_middleware(request: web.Request, handler):
         return await handler(request)
 
     # Check for valid JWT
-    token = request.cookies.get("session")
+    token = request.cookies.get(CONFIG["SESSION_COOKIE_NAME"])
 
     target = get_target_host(request)
     auth_required = not target or target.get("AUTH_REQUIRED", True)
@@ -37,7 +38,7 @@ async def auth_middleware(request: web.Request, handler):
             f"Invalid/expired session token from {client_ip} attempting {request.path}"
         )
         response = web.HTTPFound("/ppauth/login")
-        response.del_cookie("session")
+        response.del_cookie(CONFIG["SESSION_COOKIE_NAME"])
         return response
 
     # Store username in request

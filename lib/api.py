@@ -388,7 +388,7 @@ async def handle_login_complete(request: web.Request) -> web.Response:
         # Set cookie
         response = web.Response(text="Authentication successful", status=200)
         response.set_cookie(
-            "session",
+            CONFIG["SESSION_COOKIE_NAME"],
             token,
             httponly=True,
             secure=True,
