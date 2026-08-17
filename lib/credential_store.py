@@ -41,10 +41,6 @@ class _CredentialStore:
         except Exception as e:
             logger.error(f"Failed to save credentials: {e}")
 
-    def is_empty(self) -> bool:
-        """Check if there are no credentials"""
-        return len(self.credentials) == 0
-
     def add_credential(
         self,
         credential_id: bytes,
@@ -74,6 +70,9 @@ class _CredentialStore:
     def get_all_credentials_for_host(self, host: str) -> list[dict]:
         """Get all credentials for authentication"""
         return [cred for cred in self.credentials if cred.get("host") == host]
+
+    def is_empty_for_host(self, host: str) -> bool:
+        return len(self.get_all_credentials_for_host(host=host)) == 0
 
     def get_credential_by_id(self, credential_id: bytes) -> dict | None:
         """Find credential by ID"""

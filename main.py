@@ -25,6 +25,7 @@ from lib.csrf_tokens import (
 from lib.logger import logger
 from lib.proxy import handle_proxy
 from lib.rate_limit import rate_limit
+from lib.util import get_origin
 
 # Security constants
 CLEANUP_INTERVAL_SECONDS = 30  # Run cleanup every 30 seconds
@@ -40,7 +41,8 @@ RATE_LIMIT_WINDOW_SECONDS = 60  # 1 minute window
 @rate_limit(RATE_LIMIT_PAGE_ENDPOINTS)
 async def handle_setup(request: web.Request) -> web.Response:
     """Show setup page if no credentials exist"""
-    if not cred_store.is_empty():
+    origin = get_origin(request)
+    if not cred_store.is_empty_for_host(host=origin):
         return web.HTTPFound("/ppauth/login")
     csrf_token_id, csrf_token_value = generate_csrf_token()
     return web.Response(
@@ -60,7 +62,8 @@ async def handle_login(request: web.Request) -> web.Response:
 @rate_limit(RATE_LIMIT_PAGE_ENDPOINTS)
 async def handle_register_page(request: web.Request) -> web.Response:
     """Show registration page"""
-    if cred_store.is_empty():
+    origin = get_origin(request)
+    if cred_store.is_empty_for_host(host=origin):
         return web.HTTPFound("/ppauth/setup")
     csrf_token_id, csrf_token_value = generate_csrf_token()
     return web.Response(
@@ -137,12 +140,9 @@ def main():
 
     logger.info(f"Session expiry: {CONFIG['SESSION_EXPIRY_HOURS']} hours")
 
-    if cred_store.is_empty():
-        logger.info("No credentials found, first-time setup required at /ppauth/setup")
-    else:
-        logger.info(
-            f"Loaded {len(cred_store.credentials)} registered user(s) from {CONFIG['CREDENTIALS_FILE']}"  # noqa: E501
-        )
+    logger.info(
+        f"Loaded {len(cred_store.credentials)} registered user(s) from {CONFIG['CREDENTIALS_FILE']}"  # noqa: E501
+    )
 
     app = create_app()
     web.run_app(

@@ -241,14 +241,16 @@ async def handle_login_begin(request: web.Request) -> web.Response:
             )
             return web.Response(text="Invalid or expired CSRF token", status=403)
 
-        if cred_store.is_empty():
-            return web.Response(text="No credentials registered", status=400)
-
-        rp_id = get_rp_id(request)
         origin = get_origin(request)
 
         # Get all credentials
-        credentials = cred_store.get_all_credentials(host=origin)
+        credentials = cred_store.get_all_credentials_for_host(host=origin)
+
+        if len(credentials) == 0:
+            return web.Response(text="No credentials registered", status=400)
+
+        rp_id = get_rp_id(request)
+
         allow_credentials = [
             PublicKeyCredentialDescriptor(id=base64url_to_bytes(cred["id"]))
             for cred in credentials

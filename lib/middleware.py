@@ -2,7 +2,7 @@ from aiohttp import web
 
 from lib.credential_store import cred_store
 from lib.logger import logger
-from lib.util import get_client_ip, get_target_host, verify_jwt
+from lib.util import get_client_ip, get_origin, get_target_host, verify_jwt
 
 
 @web.middleware
@@ -50,7 +50,8 @@ async def auth_middleware(request: web.Request, handler):
 @web.middleware
 async def setup_redirect_middleware(request: web.Request, handler):
     """Redirect to setup if no credentials exist"""
-    if cred_store.is_empty() and request.path not in [
+    origin = get_origin(request)
+    if cred_store.is_empty_for_host(host=origin) and request.path not in [
         "/ppauth/setup",
         "/ppauth/api/register/begin",
         "/ppauth/api/register/complete",
