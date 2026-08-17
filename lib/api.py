@@ -194,6 +194,7 @@ async def handle_register_complete(request: web.Request) -> web.Response:
             public_key=verification.credential_public_key,
             username=username,
             sign_count=verification.sign_count,
+            host=origin,
             credential_data=credential,
         )
 
@@ -244,9 +245,10 @@ async def handle_login_begin(request: web.Request) -> web.Response:
             return web.Response(text="No credentials registered", status=400)
 
         rp_id = get_rp_id(request)
+        origin = get_origin(request)
 
         # Get all credentials
-        credentials = cred_store.get_all_credentials()
+        credentials = cred_store.get_all_credentials(host=origin)
         allow_credentials = [
             PublicKeyCredentialDescriptor(id=base64url_to_bytes(cred["id"]))
             for cred in credentials
